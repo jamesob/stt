@@ -190,45 +190,79 @@ def mask_api_key(key):
 
 def setup_wizard():
     """First-time setup wizard"""
-    global GROQ_API_KEY, LANGUAGE, HOTKEY, PROMPT, SOUND_ENABLED
+    global GROQ_API_KEY, LANGUAGE, HOTKEY, PROMPT, SOUND_ENABLED, PROVIDER
 
     print("\n" + "=" * 50)
     print("STT Configuration")
     print("=" * 50)
 
-    # API Key
-    if GROQ_API_KEY:
-        masked = mask_api_key(GROQ_API_KEY)
-        print(f"\nCurrent API key: {masked}")
-        api_key = input("Enter new Groq API key (or press Enter to keep): ").strip()
-        if api_key:
-            if not api_key.startswith("gsk_"):
-                confirm = input("Key doesn't look like a Groq key (should start with 'gsk_'). Use anyway? [y/N]: ").strip().lower()
-                if confirm != 'y':
-                    api_key = ""
+    # Provider selection
+    default_provider = PROVIDER or "mlx"
+    print("\nProviders:")
+    print("  [1] mlx  - Local (Apple Silicon, no internet required)")
+    print("  [2] groq - Cloud (fast, requires API key)")
+    provider_choice = input(f"Select provider [{'1' if default_provider == 'mlx' else '2'}]: ").strip()
+    if provider_choice == "1":
+        PROVIDER = "mlx"
+    elif provider_choice == "2":
+        PROVIDER = "groq"
+    # else keep default
+
+    if PROVIDER != default_provider:
+        save_config("PROVIDER", PROVIDER)
+        print(f"Provider set to: {PROVIDER}")
+
+    # MLX model selection
+    if PROVIDER == "mlx":
+        whisper_model = os.environ.get("WHISPER_MODEL", "")
+        print("\nMLX Whisper models (larger = more accurate, slower):")
+        print("  [1] large-v3 (default, best quality)")
+        print("  [2] large")
+        print("  [3] medium")
+        print("  [4] small")
+        print("  [5] base")
+        print("  [6] tiny (fastest)")
+        model_map = {"1": "large-v3", "2": "large", "3": "medium", "4": "small", "5": "base", "6": "tiny"}
+        model_choice = input("Select model [1]: ").strip()
+        if model_choice in model_map:
+            new_model = model_map[model_choice]
+            save_config("WHISPER_MODEL", new_model)
+            print(f"Model set to: {new_model}")
+
+    # Groq API Key (only if groq provider selected)
+    if PROVIDER == "groq":
+        if GROQ_API_KEY:
+            masked = mask_api_key(GROQ_API_KEY)
+            print(f"\nCurrent API key: {masked}")
+            api_key = input("Enter new Groq API key (or press Enter to keep): ").strip()
             if api_key:
-                save_config("GROQ_API_KEY", api_key)
-                GROQ_API_KEY = api_key
-                print("API key updated")
-    else:
-        print("\nTo use this app, you need a Groq API key.")
-        print("Get one at: https://console.groq.com")
-        while True:
-            api_key = input("\nEnter your Groq API key (or 'q' to quit): ").strip()
-            if api_key.lower() == 'q':
-                print("\nSetup cancelled.")
-                sys.exit(0)
-            if not api_key:
-                print("API key cannot be empty")
-                continue
-            if not api_key.startswith("gsk_"):
-                confirm = input("Key doesn't look like a Groq key (should start with 'gsk_'). Use anyway? [y/N]: ").strip().lower()
-                if confirm != 'y':
+                if not api_key.startswith("gsk_"):
+                    confirm = input("Key doesn't look like a Groq key (should start with 'gsk_'). Use anyway? [y/N]: ").strip().lower()
+                    if confirm != 'y':
+                        api_key = ""
+                if api_key:
+                    save_config("GROQ_API_KEY", api_key)
+                    GROQ_API_KEY = api_key
+                    print("API key updated")
+        else:
+            print("\nTo use Groq, you need an API key.")
+            print("Get one at: https://console.groq.com")
+            while True:
+                api_key = input("\nEnter your Groq API key (or 'q' to quit): ").strip()
+                if api_key.lower() == 'q':
+                    print("\nSetup cancelled.")
+                    sys.exit(0)
+                if not api_key:
+                    print("API key cannot be empty")
                     continue
-            break
-        save_config("GROQ_API_KEY", api_key)
-        GROQ_API_KEY = api_key
-        print("API key saved")
+                if not api_key.startswith("gsk_"):
+                    confirm = input("Key doesn't look like a Groq key (should start with 'gsk_'). Use anyway? [y/N]: ").strip().lower()
+                    if confirm != 'y':
+                        continue
+                break
+            save_config("GROQ_API_KEY", api_key)
+            GROQ_API_KEY = api_key
+            print("API key saved")
 
     # Language
     default_lang = LANGUAGE or "en"

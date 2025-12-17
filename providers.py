@@ -102,11 +102,11 @@ class MLXWhisperProvider(TranscriptionProvider):
 
     def warmup(self) -> None:
         """Pre-load the model at startup (downloads if needed)"""
+        print(f"Loading MLX Whisper model ({self.model.split('/')[-1]})...", flush=True)
+
         import mlx_whisper
         from mlx_whisper.transcribe import ModelHolder
         import mlx.core as mx
-
-        print(f"Loading MLX Whisper model ({self.model.split('/')[-1]})...")
         # Load into ModelHolder cache so transcribe() reuses it
         ModelHolder.get_model(self.model, mx.float16)
         self._mlx_whisper = mlx_whisper
