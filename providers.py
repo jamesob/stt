@@ -109,7 +109,7 @@ class _MLXWorkerClient:
         env.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
         env.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-        self._proc = subprocess.Popen(
+        proc = subprocess.Popen(
             [sys.executable, "-u", worker_path, "--model", self.model],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -119,9 +119,13 @@ class _MLXWorkerClient:
             env=env,
         )
 
-        assert self._proc.stdout is not None
-        self._reader_thread = threading.Thread(target=self._read_stdout, daemon=True)
-        self._reader_thread.start()
+        messages: "queue.Queue[dict[str, Any]]" = queue.Queue()
+        thread = threading.Thread(target=self._read_stdout, args=(proc, messages), daemon=True)
+        thread.start()
+
+        self._proc = proc
+        self._messages = messages
+        self._reader_thread = thread
 
         ready = self._wait_for(lambda m: m.get("type") in {"ready", "error"}, timeout_s=startup_timeout_s)
         if not ready:
@@ -211,18 +215,17 @@ class _MLXWorkerClient:
 
             return str(message.get("text") or "").strip()
 
-    def _read_stdout(self) -> None:
-        assert self._proc is not None
-        assert self._proc.stdout is not None
-        for line in self._proc.stdout:
+    def _read_stdout(self, proc: subprocess.Popen[str], messages: "queue.Queue[dict[str, Any]]") -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
             line = line.strip()
             if not line:
                 continue
             try:
-                self._messages.put(json.loads(line))
+                messages.put(json.loads(line))
             except json.JSONDecodeError:
-                self._messages.put({"type": "stdout", "line": line})
-        self._messages.put({"type": "eof"})
+                messages.put({"type": "stdout", "line": line})
+        messages.put({"type": "eof"})
 
     def _wait_for(self, predicate, timeout_s: int) -> dict[str, Any] | None:
         deadline = time.time() + timeout_s if timeout_s > 0 else None

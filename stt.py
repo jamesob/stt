@@ -433,8 +433,141 @@ class _AudioWorkerClient:
         return self._proc is not None and self._proc.poll() is None
 
     def ensure_running(self) -> None:
+        with self._lock:
+            self._ensure_running_locked()
+
+    def stop(self, force: bool = False) -> None:
+        with self._lock:
+            self._stop_locked(force=force)
+
+    def start_recording(self, *, device: int | None, sample_rate: int, channels: int) -> None:
+        with self._lock:
+            last_error: Exception | None = None
+            for attempt in range(2):
+                try:
+                    self._ensure_running_locked()
+                    req_id = self._next_id
+                    self._next_id += 1
+
+                    assert self._proc is not None
+                    assert self._proc.stdin is not None
+                    self._proc.stdin.write(
+                        json.dumps(
+                            {
+                                "type": "start",
+                                "id": req_id,
+                                "device": device,
+                                "sample_rate": sample_rate,
+                                "channels": channels,
+                            }
+                        )
+                        + "\n"
+                    )
+                    self._proc.stdin.flush()
+
+                    message = self._wait_for_locked(
+                        lambda m: m.get("type") in {"started", "error"} and m.get("id") == req_id,
+                        timeout_s=self._START_TIMEOUT_S,
+                    )
+                    if not message:
+                        raise TimeoutError("Timed out starting audio recording")
+                    if message.get("type") == "error":
+                        raise RuntimeError(message.get("error") or "Failed to start recording")
+                    return
+                except Exception as e:
+                    last_error = e
+                    self._stop_locked(force=True)
+                    if attempt == 0:
+                        continue
+                    raise
+            if last_error:
+                raise last_error
+
+    def stop_recording(self, *, wav_path: str) -> int:
+        with self._lock:
+            self._ensure_running_locked()
+            req_id = self._next_id
+            self._next_id += 1
+
+            assert self._proc is not None
+            assert self._proc.stdin is not None
+            self._proc.stdin.write(json.dumps({"type": "stop", "id": req_id, "wav_path": wav_path}) + "\n")
+            self._proc.stdin.flush()
+
+            message = self._wait_for_locked(
+                lambda m: m.get("type") in {"stopped", "error"} and m.get("id") == req_id,
+                timeout_s=self._STOP_TIMEOUT_S,
+            )
+            if not message:
+                raise TimeoutError("Timed out stopping audio recording")
+            if message.get("type") == "error":
+                raise RuntimeError(message.get("error") or "Failed to stop recording")
+
+            frames = message.get("frames")
+            try:
+                return int(frames or 0)
+            except (TypeError, ValueError):
+                return 0
+
+    def cancel_recording(self) -> None:
+        with self._lock:
+            if not self.is_running():
+                return
+            req_id = self._next_id
+            self._next_id += 1
+
+            assert self._proc is not None
+            assert self._proc.stdin is not None
+            self._proc.stdin.write(json.dumps({"type": "cancel", "id": req_id}) + "\n")
+            self._proc.stdin.flush()
+
+            message = self._wait_for_locked(
+                lambda m: m.get("type") in {"canceled", "error"} and m.get("id") == req_id,
+                timeout_s=self._CANCEL_TIMEOUT_S,
+            )
+            if not message:
+                raise TimeoutError("Timed out cancelling audio recording")
+            if message.get("type") == "error":
+                raise RuntimeError(message.get("error") or "Failed to cancel recording")
+
+    def _read_stdout(self, proc: subprocess.Popen[str], messages: "queue.Queue[dict[str, Any]]") -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                messages.put(json.loads(line))
+            except json.JSONDecodeError:
+                messages.put({"type": "stdout", "line": line})
+        messages.put({"type": "eof"})
+
+    def _wait_for_locked(self, predicate, timeout_s: int) -> dict[str, Any] | None:
+        deadline = time.time() + timeout_s if timeout_s > 0 else None
+        while True:
+            if deadline is not None:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return None
+            else:
+                remaining = None
+
+            try:
+                message = self._messages.get(timeout=remaining)
+            except queue.Empty:
+                return None
+
+            if message.get("type") == "eof":
+                return {"type": "error", "error": "Audio worker exited unexpectedly"}
+
+            if predicate(message):
+                return message
+
+    def _ensure_running_locked(self) -> None:
         if self.is_running():
             return
+
+        self._stop_locked(force=True)
 
         worker_path = os.path.join(os.path.dirname(__file__), "audio_worker.py")
         if not os.path.exists(worker_path):
@@ -443,31 +576,50 @@ class _AudioWorkerClient:
         env = os.environ.copy()
         env.setdefault("PYTHONUNBUFFERED", "1")
 
-        self._proc = subprocess.Popen(
-            [sys.executable, "-u", worker_path],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=None,  # inherit stderr to avoid pipe deadlocks
-            text=True,
-            bufsize=1,
-            env=env,
-        )
+        last_error: Exception | None = None
+        for attempt in range(2):
+            proc = subprocess.Popen(
+                [sys.executable, "-u", worker_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=None,  # inherit stderr to avoid pipe deadlocks
+                text=True,
+                bufsize=1,
+                env=env,
+            )
+            messages: "queue.Queue[dict[str, Any]]" = queue.Queue()
+            thread = threading.Thread(target=self._read_stdout, args=(proc, messages), daemon=True)
+            thread.start()
 
-        assert self._proc.stdout is not None
-        self._reader_thread = threading.Thread(target=self._read_stdout, daemon=True)
-        self._reader_thread.start()
+            self._proc = proc
+            self._messages = messages
+            self._reader_thread = thread
 
-        ready = self._wait_for(lambda m: m.get("type") in {"ready", "error"}, timeout_s=self._WORKER_STARTUP_TIMEOUT_S)
-        if not ready:
-            raise TimeoutError("Audio worker did not become ready in time")
-        if ready.get("type") == "error":
-            raise RuntimeError(ready.get("error") or "Audio worker failed to start")
+            ready = self._wait_for_locked(
+                lambda m: m.get("type") in {"ready", "error"},
+                timeout_s=self._WORKER_STARTUP_TIMEOUT_S,
+            )
+            if ready and ready.get("type") == "ready":
+                if not self._cleanup_registered:
+                    atexit.register(self.stop)
+                    self._cleanup_registered = True
+                return
 
-        if not self._cleanup_registered:
-            atexit.register(self.stop)
-            self._cleanup_registered = True
+            if not ready:
+                last_error = TimeoutError("Audio worker did not become ready in time")
+            else:
+                last_error = RuntimeError(ready.get("error") or "Audio worker failed to start")
 
-    def stop(self, force: bool = False) -> None:
+            self._stop_locked(force=True)
+            if attempt == 0:
+                time.sleep(0.1)
+                continue
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("Audio worker failed to start")
+
+    def _stop_locked(self, force: bool = False) -> None:
         proc = self._proc
         self._proc = None
         if proc is None:
@@ -503,118 +655,6 @@ class _AudioWorkerClient:
                     proc.stdout.close()
             except Exception:
                 pass
-
-    def start_recording(self, *, device: int | None, sample_rate: int, channels: int) -> None:
-        self.ensure_running()
-        with self._lock:
-            req_id = self._next_id
-            self._next_id += 1
-
-            assert self._proc is not None
-            assert self._proc.stdin is not None
-            self._proc.stdin.write(
-                json.dumps(
-                    {
-                        "type": "start",
-                        "id": req_id,
-                        "device": device,
-                        "sample_rate": sample_rate,
-                        "channels": channels,
-                    }
-                )
-                + "\n"
-            )
-            self._proc.stdin.flush()
-
-            message = self._wait_for(
-                lambda m: m.get("type") in {"started", "error"} and m.get("id") == req_id,
-                timeout_s=self._START_TIMEOUT_S,
-            )
-            if not message:
-                raise TimeoutError("Timed out starting audio recording")
-            if message.get("type") == "error":
-                raise RuntimeError(message.get("error") or "Failed to start recording")
-
-    def stop_recording(self, *, wav_path: str) -> int:
-        self.ensure_running()
-        with self._lock:
-            req_id = self._next_id
-            self._next_id += 1
-
-            assert self._proc is not None
-            assert self._proc.stdin is not None
-            self._proc.stdin.write(json.dumps({"type": "stop", "id": req_id, "wav_path": wav_path}) + "\n")
-            self._proc.stdin.flush()
-
-            message = self._wait_for(
-                lambda m: m.get("type") in {"stopped", "error"} and m.get("id") == req_id,
-                timeout_s=self._STOP_TIMEOUT_S,
-            )
-            if not message:
-                raise TimeoutError("Timed out stopping audio recording")
-            if message.get("type") == "error":
-                raise RuntimeError(message.get("error") or "Failed to stop recording")
-
-            frames = message.get("frames")
-            try:
-                return int(frames or 0)
-            except (TypeError, ValueError):
-                return 0
-
-    def cancel_recording(self) -> None:
-        if not self.is_running():
-            return
-        with self._lock:
-            req_id = self._next_id
-            self._next_id += 1
-
-            assert self._proc is not None
-            assert self._proc.stdin is not None
-            self._proc.stdin.write(json.dumps({"type": "cancel", "id": req_id}) + "\n")
-            self._proc.stdin.flush()
-
-            message = self._wait_for(
-                lambda m: m.get("type") in {"canceled", "error"} and m.get("id") == req_id,
-                timeout_s=self._CANCEL_TIMEOUT_S,
-            )
-            if not message:
-                raise TimeoutError("Timed out cancelling audio recording")
-            if message.get("type") == "error":
-                raise RuntimeError(message.get("error") or "Failed to cancel recording")
-
-    def _read_stdout(self) -> None:
-        assert self._proc is not None
-        assert self._proc.stdout is not None
-        for line in self._proc.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                self._messages.put(json.loads(line))
-            except json.JSONDecodeError:
-                self._messages.put({"type": "stdout", "line": line})
-        self._messages.put({"type": "eof"})
-
-    def _wait_for(self, predicate, timeout_s: int) -> dict[str, Any] | None:
-        deadline = time.time() + timeout_s if timeout_s > 0 else None
-        while True:
-            if deadline is not None:
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    return None
-            else:
-                remaining = None
-
-            try:
-                message = self._messages.get(timeout=remaining)
-            except queue.Empty:
-                return None
-
-            if message.get("type") == "eof":
-                return {"type": "error", "error": "Audio worker exited unexpectedly"}
-
-            if predicate(message):
-                return message
 
 
 class STTApp:
