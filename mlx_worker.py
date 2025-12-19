@@ -80,7 +80,6 @@ def main() -> int:
                 path_or_hf_repo=model,
                 language=language,
                 initial_prompt=prompt,
-                verbose=False,
             )
             text = (result.get("text") or "").strip()
             _write_json({"type": "result", "id": req_id, "text": text, "error": None})
@@ -93,4 +92,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
