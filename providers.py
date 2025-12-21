@@ -140,31 +140,48 @@ class _MLXWorkerClient:
         if proc is None:
             return
 
+        # Close stdin first to signal worker to stop and unblock any writes
         try:
-            if not force and proc.poll() is None and proc.stdin is not None:
+            if proc.stdin:
+                proc.stdin.close()
+        except Exception:
+            pass
+
+        try:
+            if not force and proc.poll() is None:
+                # Give process a chance to exit gracefully
                 try:
-                    proc.stdin.write(json.dumps({"type": "shutdown"}) + "\n")
-                    proc.stdin.flush()
-                    proc.wait(timeout=2)
-                except Exception:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
                     pass
 
             if proc.poll() is None:
                 proc.terminate()
-                proc.wait(timeout=2)
+                # Close stdout to unblock reader thread before waiting
+                try:
+                    if proc.stdout:
+                        proc.stdout.close()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+
+            if proc.poll() is None:
+                proc.kill()
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
         except Exception:
             try:
                 if proc.poll() is None:
                     proc.kill()
-                    proc.wait(timeout=2)
             except Exception:
                 pass
         finally:
-            try:
-                if proc.stdin:
-                    proc.stdin.close()
-            except Exception:
-                pass
+            # Ensure stdout is closed (may have been closed above, but that's ok)
             try:
                 if proc.stdout:
                     proc.stdout.close()

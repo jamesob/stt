@@ -15,6 +15,7 @@ import time
 import subprocess
 import atexit
 import fcntl
+import concurrent.futures
 from enum import Enum
 from typing import Any, Callable, Optional
 
@@ -28,6 +29,8 @@ from dotenv import load_dotenv
 import sounddevice as sd
 from pynput import keyboard
 import requests
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 from providers import get_provider
 from menubar import STTMenuBar
@@ -148,6 +151,141 @@ HOTKEYS = {
 SOUND_START = "/System/Library/Sounds/Tink.aiff"
 SOUND_STOP = "/System/Library/Sounds/Pop.aiff"
 SOUND_CANCEL = "/System/Library/Sounds/Basso.aiff"
+
+
+class ConfigWatcher:
+    """Watch config files for changes and trigger reload"""
+
+    def __init__(self, on_config_change: Callable[[dict], None]):
+        self._on_config_change = on_config_change
+        self._observer: Optional[Observer] = None
+        self._watched_files: set[str] = set()
+        self._last_mtime: dict[str, float] = {}
+        self._debounce_timer: Optional[threading.Timer] = None
+        self._lock = threading.Lock()
+
+    def start(self):
+        """Start watching config files"""
+        # Determine which files to watch
+        local_env = os.path.join(os.getcwd(), ".env")
+        if os.path.exists(local_env):
+            self._watched_files.add(local_env)
+        if os.path.exists(CONFIG_FILE):
+            self._watched_files.add(CONFIG_FILE)
+        elif os.path.exists(CONFIG_DIR):
+            # Watch the directory for file creation
+            self._watched_files.add(CONFIG_FILE)
+
+        if not self._watched_files:
+            return
+
+        # Get initial mtimes
+        for path in self._watched_files:
+            if os.path.exists(path):
+                self._last_mtime[path] = os.path.getmtime(path)
+
+        # Create observer
+        self._observer = Observer()
+        handler = _ConfigFileHandler(self._on_file_changed, self._watched_files)
+
+        # Watch directories containing config files
+        watched_dirs = set()
+        for path in self._watched_files:
+            dir_path = os.path.dirname(path)
+            if dir_path and dir_path not in watched_dirs:
+                watched_dirs.add(dir_path)
+                self._observer.schedule(handler, dir_path, recursive=False)
+
+        self._observer.start()
+        print(f"👀 Watching config: {', '.join(self._watched_files)}")
+
+    def stop(self):
+        """Stop watching config files"""
+        if self._observer:
+            self._observer.stop()
+            self._observer.join(timeout=2)
+            self._observer = None
+        with self._lock:
+            if self._debounce_timer:
+                self._debounce_timer.cancel()
+                self._debounce_timer = None
+
+    def _on_file_changed(self, path: str):
+        """Handle file change event with debouncing"""
+        with self._lock:
+            # Check if file actually changed (debounce duplicate events)
+            if os.path.exists(path):
+                new_mtime = os.path.getmtime(path)
+                old_mtime = self._last_mtime.get(path, 0)
+                if new_mtime == old_mtime:
+                    return
+                self._last_mtime[path] = new_mtime
+
+            # Debounce: wait 100ms before triggering reload
+            if self._debounce_timer:
+                self._debounce_timer.cancel()
+            self._debounce_timer = threading.Timer(0.1, self._reload_config)
+            self._debounce_timer.start()
+
+    def _reload_config(self):
+        """Reload config and notify callback"""
+        old_values = {
+            "GROQ_API_KEY": GROQ_API_KEY,
+            "AUDIO_DEVICE": AUDIO_DEVICE,
+            "LANGUAGE": LANGUAGE,
+            "HOTKEY": HOTKEY,
+            "PROMPT": PROMPT,
+            "SOUND_ENABLED": SOUND_ENABLED,
+            "PROVIDER": PROVIDER,
+            "WHISPER_MODEL": os.environ.get("WHISPER_MODEL", ""),
+        }
+
+        # Reload environment from files
+        for path in sorted(self._watched_files):  # Global first, local last = local wins with override
+            if os.path.exists(path):
+                load_dotenv(path, override=True)
+
+        # Get new values
+        new_values = {
+            "GROQ_API_KEY": os.environ.get("GROQ_API_KEY", ""),
+            "AUDIO_DEVICE": os.environ.get("AUDIO_DEVICE", ""),
+            "LANGUAGE": os.environ.get("LANGUAGE", "en"),
+            "HOTKEY": os.environ.get("HOTKEY", "cmd_r"),
+            "PROMPT": os.environ.get("PROMPT", ""),
+            "SOUND_ENABLED": os.environ.get("SOUND_ENABLED", "true").lower() == "true",
+            "PROVIDER": os.environ.get("PROVIDER", "mlx"),
+            "WHISPER_MODEL": os.environ.get("WHISPER_MODEL", ""),
+        }
+
+        # Find what changed
+        changes = {}
+        for key in old_values:
+            if old_values[key] != new_values[key]:
+                changes[key] = new_values[key]
+
+        if changes:
+            print(f"🔄 Config changed: {', '.join(changes.keys())}")
+            self._on_config_change(changes)
+
+
+class _ConfigFileHandler(FileSystemEventHandler):
+    """Handle file system events for config files"""
+
+    def __init__(self, callback: Callable[[str], None], watched_files: set[str]):
+        self._callback = callback
+        self._watched_files = watched_files
+
+    def on_modified(self, event):
+        if event.is_directory:
+            return
+        if event.src_path in self._watched_files:
+            self._callback(event.src_path)
+
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        if event.src_path in self._watched_files:
+            self._callback(event.src_path)
 
 
 def play_sound(sound_path):
@@ -625,31 +763,48 @@ class _AudioWorkerClient:
         if proc is None:
             return
 
+        # Close stdin first to signal worker to stop and unblock any writes
         try:
-            if not force and proc.poll() is None and proc.stdin is not None:
+            if proc.stdin:
+                proc.stdin.close()
+        except Exception:
+            pass
+
+        try:
+            if not force and proc.poll() is None:
+                # Give process a chance to exit gracefully
                 try:
-                    proc.stdin.write(json.dumps({"type": "shutdown"}) + "\n")
-                    proc.stdin.flush()
-                    proc.wait(timeout=2)
-                except Exception:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
                     pass
 
             if proc.poll() is None:
                 proc.terminate()
-                proc.wait(timeout=2)
+                # Close stdout to unblock reader thread before waiting
+                try:
+                    if proc.stdout:
+                        proc.stdout.close()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+
+            if proc.poll() is None:
+                proc.kill()
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
         except Exception:
             try:
                 if proc.poll() is None:
                     proc.kill()
-                    proc.wait(timeout=2)
             except Exception:
                 pass
         finally:
-            try:
-                if proc.stdin:
-                    proc.stdin.close()
-            except Exception:
-                pass
+            # Ensure stdout is closed (may have been closed above, but that's ok)
             try:
                 if proc.stdout:
                     proc.stdout.close()
@@ -658,6 +813,9 @@ class _AudioWorkerClient:
 
 
 class STTApp:
+    # Maximum time for any operation before we consider it stuck
+    _MAX_OPERATION_TIME_S = 300  # 5 minutes
+
     def __init__(self, device=None, provider=None):
         self.recording = False
         self.device = device
@@ -668,10 +826,52 @@ class STTApp:
         self._lock = threading.Lock()
         self._processing = False  # Guard against concurrent process_recording calls
         self._starting = False  # Guard against concurrent start_recording calls
+        self._operation_start_time: Optional[float] = None  # Track when operations start
 
         # State management for menu bar
         self._state = AppState.IDLE
         self._state_callback: Optional[Callable[[AppState], None]] = None
+
+        # Start watchdog thread to detect stuck states
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread = threading.Thread(target=self._watchdog_loop, daemon=True)
+        self._watchdog_thread.start()
+
+    def _watchdog_loop(self):
+        """Monitor for stuck states and recover if needed"""
+        while not self._watchdog_stop.wait(timeout=5):  # Check every 5 seconds
+            with self._lock:
+                if self._operation_start_time is not None:
+                    elapsed = time.time() - self._operation_start_time
+                    if elapsed > self._MAX_OPERATION_TIME_S:
+                        print(f"⚠️  Operation stuck for {elapsed:.0f}s, resetting state...")
+                        self._force_reset_state_locked()
+
+    def _force_reset_state_locked(self):
+        """Force reset all state flags (must be called with lock held)"""
+        self._processing = False
+        self._starting = False
+        self.recording = False
+        self._operation_start_time = None
+        # Force restart workers
+        try:
+            self._audio_worker.stop(force=True)
+        except Exception:
+            pass
+        cancel = getattr(self.provider, "cancel", None)
+        if callable(cancel):
+            try:
+                cancel()
+            except Exception:
+                pass
+        # Reset state via callback (schedule on main thread would be ideal but this is ok)
+        if self._state_callback:
+            try:
+                self._state_callback(AppState.IDLE)
+            except Exception:
+                pass
+        self._state = AppState.IDLE
+        print("State reset complete. Ready for next recording.")
 
     def set_state_callback(self, callback: Callable[[AppState], None]):
         """Register callback for state changes (called from any thread)"""
@@ -692,6 +892,7 @@ class STTApp:
                 return
             self._starting = True
             self.recording = True
+            self._operation_start_time = time.time()
 
         self._set_state(AppState.RECORDING)
         play_sound(SOUND_START)
@@ -711,6 +912,7 @@ class STTApp:
             self._audio_worker.stop(force=True)
             with self._lock:
                 self.recording = False
+                self._operation_start_time = None
             self._set_state(AppState.IDLE)
         finally:
             with self._lock:
@@ -764,8 +966,10 @@ class STTApp:
                 # Even if not recording, ensure state is IDLE (fallback safeguard)
                 if self._state == AppState.RECORDING:
                     self._set_state(AppState.IDLE)
+                self._operation_start_time = None
                 return
             self.recording = False
+            self._operation_start_time = None
 
         self._set_state(AppState.IDLE)
         play_sound(SOUND_CANCEL)
@@ -793,9 +997,25 @@ class STTApp:
             except Exception as e:
                 print(f"⚠️  Error cancelling transcription: {e}")
 
-    def transcribe_audio(self, audio_file_path):
-        """Transcribe audio using the configured provider"""
-        return self.provider.transcribe(audio_file_path, LANGUAGE, PROMPT)
+    def transcribe_audio(self, audio_file_path, timeout_s: int = 200):
+        """Transcribe audio using the configured provider with timeout protection"""
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(self.provider.transcribe, audio_file_path, LANGUAGE, PROMPT)
+            try:
+                return future.result(timeout=timeout_s)
+            except concurrent.futures.TimeoutError:
+                print("❌ Transcription timed out at STTApp level")
+                # Try to cancel the provider if it supports cancellation
+                cancel = getattr(self.provider, "cancel", None)
+                if callable(cancel):
+                    try:
+                        cancel()
+                    except Exception:
+                        pass
+                return None
+            except Exception as e:
+                print(f"❌ Transcription error: {e}")
+                return None
 
     def print_ready_prompt(self):
         """Print the ready prompt with hotkey name"""
@@ -827,14 +1047,16 @@ class STTApp:
         '''
 
         try:
-            subprocess.run(["osascript", "-e", script], check=True)
+            subprocess.run(["osascript", "-e", script], check=True, timeout=10)
             if send_enter:
                 enter_script = '''
                 tell application "System Events"
                     key code 36
                 end tell
                 '''
-                subprocess.run(["osascript", "-e", enter_script], check=True)
+                subprocess.run(["osascript", "-e", enter_script], check=True, timeout=5)
+        except subprocess.TimeoutExpired:
+            print("❌ Typing timed out (osascript hung)")
         except subprocess.CalledProcessError as e:
             print(f"❌ Failed to type text: {e}")
     
@@ -879,6 +1101,7 @@ class STTApp:
             self._set_state(AppState.IDLE)
             with self._lock:
                 self._processing = False
+                self._operation_start_time = None
 
 
 def main():
@@ -1009,9 +1232,70 @@ def main():
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()
 
+    # Config change handler
+    def on_config_change(changes: dict):
+        global GROQ_API_KEY, AUDIO_DEVICE, LANGUAGE, HOTKEY, PROMPT, SOUND_ENABLED, PROVIDER
+        nonlocal trigger_key
+
+        # Update global variables
+        if "GROQ_API_KEY" in changes:
+            GROQ_API_KEY = changes["GROQ_API_KEY"]
+        if "AUDIO_DEVICE" in changes:
+            AUDIO_DEVICE = changes["AUDIO_DEVICE"]
+            # Update device for next recording
+            new_device = None
+            if AUDIO_DEVICE:
+                devices = sd.query_devices()
+                for i, dev in enumerate(devices):
+                    if dev['max_input_channels'] > 0 and dev['name'] == AUDIO_DEVICE:
+                        new_device = i
+                        break
+            app.device = new_device
+            print(f"   Audio device: {AUDIO_DEVICE or 'default'}")
+        if "LANGUAGE" in changes:
+            LANGUAGE = changes["LANGUAGE"]
+            print(f"   Language: {LANGUAGE}")
+        if "HOTKEY" in changes:
+            new_hotkey = changes["HOTKEY"]
+            if new_hotkey in HOTKEYS:
+                HOTKEY = new_hotkey
+                trigger_key = HOTKEYS[HOTKEY]["key"]
+                print(f"   Hotkey: {HOTKEYS[HOTKEY]['name']}")
+            else:
+                print(f"   Invalid hotkey: {new_hotkey}, keeping current")
+        if "PROMPT" in changes:
+            PROMPT = changes["PROMPT"]
+            print(f"   Prompt: {PROMPT or '(empty)'}")
+        if "SOUND_ENABLED" in changes:
+            SOUND_ENABLED = changes["SOUND_ENABLED"]
+            menubar.update_sound_enabled(SOUND_ENABLED)
+            print(f"   Sound: {'enabled' if SOUND_ENABLED else 'disabled'}")
+
+        # Handle provider changes (requires reinitialization)
+        if "PROVIDER" in changes or "WHISPER_MODEL" in changes or "GROQ_API_KEY" in changes:
+            new_provider_name = changes.get("PROVIDER", PROVIDER)
+            if new_provider_name != PROVIDER:
+                PROVIDER = new_provider_name
+            try:
+                new_provider = get_provider(PROVIDER)
+                if new_provider.is_available():
+                    new_provider.warmup()
+                    app.provider = new_provider
+                    menubar.update_provider_name(new_provider.name)
+                    print(f"   Provider: {new_provider.name}")
+                else:
+                    print(f"   Provider '{PROVIDER}' not available")
+            except Exception as e:
+                print(f"   Failed to reinitialize provider: {e}")
+
+    # Start config watcher
+    config_watcher = ConfigWatcher(on_config_change)
+    config_watcher.start()
+
     # Cleanup handler
     def cleanup():
         listener.stop()
+        config_watcher.stop()
 
     atexit.register(cleanup)
 

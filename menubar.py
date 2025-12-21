@@ -155,6 +155,18 @@ class STTMenuBar(rumps.App):
         sender.state = self._sound_enabled
         self._on_sound_toggle(self._sound_enabled)
 
+    def update_sound_enabled(self, enabled: bool):
+        """Update sound enabled state (called from config reload)"""
+        self._sound_enabled = enabled
+        self._sound_item.state = enabled
+
+    def update_provider_name(self, name: str):
+        """Update provider name in menu (called from config reload)"""
+        self.provider_name = name
+        # Update the menu item title
+        if len(self.menu) > 1:
+            self.menu.values()[1].title = f"Provider: {name}"
+
     def _open_config(self, _):
         """Open the config file in default editor"""
         subprocess.run(["open", self.config_file])

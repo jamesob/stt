@@ -13,6 +13,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "mlx-whisper>=0.4.0",
     "rumps>=0.4.0",
+    "watchdog>=3.0.0",
 ]
 
 [project.scripts]
