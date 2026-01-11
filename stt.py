@@ -1153,7 +1153,7 @@ def main():
 
     hotkey_name = HOTKEYS[HOTKEY]["name"] if HOTKEY in HOTKEYS else HOTKEY
     print(f"Press [{hotkey_name}] to record, release to transcribe")
-    print("Hold LEFT SHIFT while recording to also send Enter")
+    print("Hold SHIFT while recording to also send Enter")
     print("Press ESC to cancel recording / stuck transcription, Ctrl+C to quit")
     print("=" * 50)
 
@@ -1196,7 +1196,7 @@ def main():
     def on_press(key):
         nonlocal key_pressed, shift_held, send_enter_flag
         try:
-            if key == keyboard.Key.shift_l:
+            if key in (keyboard.Key.shift_l, keyboard.Key.shift_r):
                 shift_held = True
                 # If already recording, mark for enter
                 if app.recording:
@@ -1225,7 +1225,7 @@ def main():
     def on_release(key):
         nonlocal key_pressed, shift_held, send_enter_flag
         try:
-            if key == keyboard.Key.shift_l:
+            if key in (keyboard.Key.shift_l, keyboard.Key.shift_r):
                 shift_held = False
                 return
             # Check for trigger key release. Also accept generic 'cmd' when trigger is cmd_r,
