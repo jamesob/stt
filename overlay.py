@@ -309,6 +309,7 @@ class RecordingOverlay:
             if self._view:
                 self._view._smoothed = [0.0] * BAR_COUNT
                 self._view._shift_held = False
+                self._view.setTranscribing_(False)
             self._window.orderFront_(None)
 
         _run_on_main_thread(_show)
@@ -357,7 +358,7 @@ class RecordingOverlay:
 
 def _run_on_main_thread(func):
     """Run function on main thread"""
-    from Foundation import NSThread, NSObject, NSRunLoop, NSDefaultRunLoopMode
+    from Foundation import NSThread, NSRunLoop, NSRunLoopCommonModes
 
     if NSThread.isMainThread():
         func()
@@ -374,7 +375,7 @@ def _run_on_main_thread(func):
             func()
 
         timer = NSTimer.timerWithTimeInterval_repeats_block_(0, False, fire_)
-        NSRunLoop.mainRunLoop().addTimer_forMode_(timer, NSDefaultRunLoopMode)
+        NSRunLoop.mainRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
 
 
 # Global overlay instance
