@@ -1,8 +1,13 @@
 # STT
 
-Voice-to-text for macOS. Hold a key, speak, release — your words appear wherever your cursor is.
+**Like SuperWhisper, but free. Like Wispr Flow, but local.**
 
-Built for vibe coding and conversations with AI agents. Supports cloud (Groq API) or local transcription (MLX Whisper, Parakeet).
+Hold a key, speak, release — your words appear wherever your cursor is. Built for vibe coding and conversations with AI agents.
+
+- **Free & open source** — no subscription, no cloud dependency
+- **Runs locally** on Apple Silicon via MLX Whisper or Parakeet
+- **Or use cloud** (Groq) when you prefer
+- **One command install** — `uv tool install git+https://github.com/bokan/stt.git`
 
 ## Features
 

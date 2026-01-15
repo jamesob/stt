@@ -1,7 +1,7 @@
 [project]
 name = "stt"
 dynamic = ["version"]
-description = "Speech-to-text for macOS - great for vibe coding and talking to AI agents"
+description = "Like SuperWhisper, but free. Like Wispr Flow, but local. Voice-to-text for macOS vibe coding."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
