@@ -18,6 +18,13 @@ import fcntl
 import concurrent.futures
 from enum import Enum
 from typing import Any, Callable, Optional
+from Quartz import (
+    CGEventCreateKeyboardEvent,
+    CGEventPost,
+    CGEventSetFlags,
+    kCGHIDEventTap,
+    kCGEventFlagMaskCommand,
+)
 
 # Suppress multiprocessing semaphore leak warning (benign at exit)
 import warnings
@@ -57,6 +64,8 @@ try:
     from providers import get_provider
     from menubar import STTMenuBar
     from overlay import get_overlay
+    from prompt_overlay import PromptOverlay
+    from prompts_config import ensure_default_prompts
 finally:
     _slow_timer.cancel()
     _status.stop()
@@ -1198,13 +1207,59 @@ def main():
     console.print()
 
     app = STTApp(device_name=device_name, provider=provider)
+
+    # Ensure default prompts exist
+    ensure_default_prompts()
+
+    # Create prompt overlay
+    def paste_with_cgevent(text):
+        """Paste text using CGEvent - ignores physical modifier state"""
+        # Save clipboard
+        old_clipboard = subprocess.run(["pbpaste"], capture_output=True, timeout=2).stdout
+        # Copy text
+        subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True, timeout=2)
+
+        # Send Cmd+V via CGEvent with explicit Cmd flag only
+        # Key code 9 = 'v' on US keyboard
+        v_keycode = 9
+
+        # Key down with Cmd
+        event_down = CGEventCreateKeyboardEvent(None, v_keycode, True)
+        CGEventSetFlags(event_down, kCGEventFlagMaskCommand)
+        CGEventPost(kCGHIDEventTap, event_down)
+
+        # Key up
+        event_up = CGEventCreateKeyboardEvent(None, v_keycode, False)
+        CGEventSetFlags(event_up, kCGEventFlagMaskCommand)
+        CGEventPost(kCGHIDEventTap, event_up)
+
+        time.sleep(0.05)
+        # Restore clipboard
+        subprocess.run(["pbcopy"], input=old_clipboard, check=True, timeout=2)
+
+    def on_prompt_select(text):
+        def do_paste():
+            # Delete the special char that Option+key produced
+            backspace_script = '''
+            tell application "System Events"
+                key code 51
+            end tell
+            '''
+            subprocess.run(["osascript", "-e", backspace_script], timeout=2)
+            time.sleep(0.03)
+            paste_with_cgevent(text)
+        threading.Thread(target=do_paste, daemon=True).start()
+
+    prompt_overlay = PromptOverlay(on_select=on_prompt_select)
+
     key_pressed = False
     shift_held = False
     send_enter_flag = False
+    prompt_overlay_active = False
     trigger_key = HOTKEYS[HOTKEY]["key"] if HOTKEY in HOTKEYS else keyboard.Key.cmd_r
 
     def on_press(key):
-        nonlocal key_pressed, shift_held, send_enter_flag
+        nonlocal key_pressed, shift_held, send_enter_flag, prompt_overlay_active
         try:
             if key in (keyboard.Key.shift_l, keyboard.Key.shift_r):
                 shift_held = True
@@ -1222,13 +1277,34 @@ def main():
                     # Start recording in background thread to avoid blocking keyboard listener
                     threading.Thread(target=app.start_recording, daemon=True).start()
             elif key == keyboard.Key.esc:
-                if app.recording:
+                if prompt_overlay_active:
+                    prompt_overlay.hide()
+                    prompt_overlay_active = False
+                elif app.recording:
                     key_pressed = False
                     send_enter_flag = False
                     # Cancel recording in background thread to avoid blocking keyboard listener
                     threading.Thread(target=app.cancel_recording, daemon=True).start()
                 else:
                     threading.Thread(target=app.cancel_transcription, daemon=True).start()
+            elif key == keyboard.Key.alt_r:
+                if not prompt_overlay_active:
+                    prompt_overlay_active = True
+                    prompt_overlay.show()
+            elif prompt_overlay_active and hasattr(key, 'vk') and key.vk is not None:
+                # Map virtual key codes to chars (Option+key produces special chars)
+                VK_TO_CHAR = {
+                    18: '1', 19: '2', 20: '3', 21: '4', 23: '5',
+                    22: '6', 26: '7', 28: '8', 25: '9', 29: '0',
+                    0: 'a', 11: 'b', 8: 'c', 2: 'd', 14: 'e', 3: 'f',
+                    5: 'g', 4: 'h', 34: 'i', 38: 'j', 40: 'k', 37: 'l',
+                    46: 'm', 45: 'n', 31: 'o', 35: 'p', 12: 'q', 15: 'r',
+                    1: 's', 17: 't', 32: 'u', 9: 'v', 13: 'w', 7: 'x',
+                    16: 'y', 6: 'z',
+                }
+                char = VK_TO_CHAR.get(key.vk)
+                if char and prompt_overlay.handle_key(char):
+                    prompt_overlay_active = False
         except Exception as e:
             print(f"⚠️  Error in key press handler: {e}")
             # Reset state on error to prevent stuck keys
@@ -1236,11 +1312,16 @@ def main():
             send_enter_flag = False
 
     def on_release(key):
-        nonlocal key_pressed, shift_held, send_enter_flag
+        nonlocal key_pressed, shift_held, send_enter_flag, prompt_overlay_active
         try:
             if key in (keyboard.Key.shift_l, keyboard.Key.shift_r):
                 shift_held = False
                 # Don't hide enter icon - it stays visible once activated
+                return
+            if key == keyboard.Key.alt_r:
+                if prompt_overlay_active:
+                    prompt_overlay.hide()
+                    prompt_overlay_active = False
                 return
             # Check for trigger key release. Also accept generic 'cmd' when trigger is cmd_r,
             # because macOS reports ambiguous releases (e.g., releasing cmd_r while cmd_l is held)
