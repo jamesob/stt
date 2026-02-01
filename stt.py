@@ -807,6 +807,7 @@ class _AudioWorkerClient:
 
         env = os.environ.copy()
         env.setdefault("PYTHONUNBUFFERED", "1")
+        env["STT_PARENT_PID"] = str(os.getpid())
 
         last_error: Exception | None = None
         for attempt in range(2):

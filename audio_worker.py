@@ -9,8 +9,10 @@ deadlocks during stop/close can't freeze the main UI.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
+import time
 import traceback
 from typing import Any
 
@@ -251,6 +253,27 @@ class Recorder:
 def main() -> int:
     recorder = Recorder()
     _write_json({"type": "ready"})
+
+    parent_pid = os.environ.get("STT_PARENT_PID")
+    if parent_pid:
+        try:
+            parent_pid_int = int(parent_pid)
+        except ValueError:
+            parent_pid_int = None
+        if parent_pid_int:
+            def _watch_parent() -> None:
+                while True:
+                    time.sleep(2)
+                    try:
+                        os.kill(parent_pid_int, 0)
+                    except Exception:
+                        _log("[stt:audio-worker] Parent gone; exiting")
+                        try:
+                            recorder.shutdown()
+                        except Exception:
+                            pass
+                        os._exit(0)
+            threading.Thread(target=_watch_parent, daemon=True).start()
 
     for line in sys.stdin:
         line = line.strip()
