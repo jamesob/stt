@@ -366,7 +366,8 @@ def check_model_cached(model_id: str) -> bool:
     try:
         from huggingface_hub import try_to_load_from_cache, HfFileSystemResolvedPath
 
-        repo_id = f"mlx-community/whisper-{model_id}-mlx"
+        from providers import MLXWhisperProvider
+        repo_id = MLXWhisperProvider.mlx_repo_id(model_id)
         # Check for config.json as a proxy for the model being cached
         result = try_to_load_from_cache(repo_id, "config.json")
         return result is not None
@@ -430,7 +431,8 @@ def download_model_with_progress(model_id: str, progress: Progress, task_id) -> 
     import os
     import tqdm
 
-    repo_id = f"mlx-community/whisper-{model_id}-mlx"
+    from providers import MLXWhisperProvider
+    repo_id = MLXWhisperProvider.mlx_repo_id(model_id)
     total_size = get_model_download_size(model_id)
 
     if total_size:

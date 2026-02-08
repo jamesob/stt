@@ -495,7 +495,22 @@ class _WorkerClient:
 class MLXWhisperProvider(TranscriptionProvider):
     """Local Whisper provider using MLX (Apple Silicon optimized)"""
 
+    # Short names that users can pass as WHISPER_MODEL.
+    _SHORT_NAMES = {"large-v3", "large-v3-turbo", "large", "medium", "small", "base", "tiny"}
+    # Repos that don't follow the default ``whisper-{name}-mlx`` convention.
+    _REPO_OVERRIDES = {
+        "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+    }
     DEFAULT_MODEL = "mlx-community/whisper-large-v3-mlx"
+
+    @staticmethod
+    def mlx_repo_id(short_name: str) -> str:
+        """Map a short model name (e.g. ``large-v3-turbo``) to its HF repo id."""
+        override = MLXWhisperProvider._REPO_OVERRIDES.get(short_name)
+        if override:
+            return override
+        return f"mlx-community/whisper-{short_name}-mlx"
+
     _WORKER_STARTUP_TIMEOUT_S = 1800
     _TRANSCRIBE_TIMEOUT_S = 6
 
@@ -503,8 +518,8 @@ class MLXWhisperProvider(TranscriptionProvider):
         self.model = model or os.environ.get("WHISPER_MODEL", self.DEFAULT_MODEL)
         # Normalize model name if user provides short form
         if self.model and not self.model.startswith("mlx-community/"):
-            if self.model in ("large-v3", "large-v3-turbo", "large", "medium", "small", "base", "tiny"):
-                self.model = f"mlx-community/whisper-{self.model}-mlx"
+            if self.model in self._SHORT_NAMES:
+                self.model = self.mlx_repo_id(self.model)
         self._mlx_whisper = None
         self._use_worker = True
         self._worker: _MLXWorkerClient | None = None
