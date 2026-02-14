@@ -113,6 +113,7 @@ class STTApp:
 
     def start_recording(self):
         """Start recording audio from microphone."""
+        import traceback
         with self._lock:
             if self._processing:
                 self._log_event("start_ignored_processing")

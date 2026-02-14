@@ -212,10 +212,10 @@ class InputController:
 
             # Prompt overlay (Right Option) unless Option is the trigger key.
             if key == keyboard.Key.alt_r and not trigger_is_alt:
-                with self._lock:
-                    if not self._prompt_overlay_active:
-                        self._prompt_overlay_active = True
-                        self._prompt_overlay.show()
+                # with self._lock:
+                #     if not self._prompt_overlay_active:
+                #         self._prompt_overlay_active = True
+                #         self._prompt_overlay.show()
                 return
 
             with self._lock:
@@ -275,6 +275,7 @@ class InputController:
                 self._record_source = None
 
     def _on_click(self, x, y, button, pressed):
+        """
         if button != mouse.Button.middle:
             return
 
@@ -293,6 +294,8 @@ class InputController:
                 self._mouse_pressed = False
                 self._record_source = None
             threading.Thread(target=self._app.process_recording, args=(True,), daemon=True).start()
+        """
+        return
 
     def _start_release_fallback(self) -> None:
         if self._fallback_thread and self._fallback_thread.is_alive():
