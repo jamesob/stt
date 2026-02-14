@@ -512,7 +512,7 @@ class MLXWhisperProvider(TranscriptionProvider):
         return f"mlx-community/whisper-{short_name}-mlx"
 
     _WORKER_STARTUP_TIMEOUT_S = 1800
-    _TRANSCRIBE_TIMEOUT_S = 6
+    _TRANSCRIBE_TIMEOUT_S = 30
 
     def __init__(self, model: str = None):
         self.model = model or os.environ.get("WHISPER_MODEL", self.DEFAULT_MODEL)
@@ -660,7 +660,7 @@ class ParakeetProvider(TranscriptionProvider):
 
     DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
     _WORKER_STARTUP_TIMEOUT_S = 1800
-    _TRANSCRIBE_TIMEOUT_S = 6
+    _TRANSCRIBE_TIMEOUT_S = 30
 
     def __init__(self, model: str = None):
         self.model = model or os.environ.get("PARAKEET_MODEL", self.DEFAULT_MODEL)

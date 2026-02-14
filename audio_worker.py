@@ -61,7 +61,7 @@ class Recorder:
             raise RuntimeError("Already recording")
 
         # Wait for any pending stream close from a previous recording.
-        self._await_stream_close()
+        self._await_pending_close()
         if self._force_exit:
             raise RuntimeError("Audio driver stuck; worker restart required")
 
@@ -240,7 +240,7 @@ class Recorder:
 
         if not chunks:
             if stream is not None:
-                self._begin_close_stream(stream)
+                self._close_stream(stream)
             return 0, 0.0
 
         import numpy as np
@@ -253,9 +253,9 @@ class Recorder:
         audio_int16 = (audio * 32767).astype(np.int16)
         wavfile.write(wav_path, int(self._sample_rate or 16000), audio_int16)
 
-        # Close stream *after* saving wav so the response isn't delayed.
+        # Close stream *after* saving wav so the data capture isn't delayed.
         if stream is not None:
-            self._begin_close_stream(stream)
+            self._close_stream(stream)
 
         return frames, peak
 
@@ -269,21 +269,22 @@ class Recorder:
         stream = self._stream
         self._stream = None
         if stream is not None:
-            self._begin_close_stream(stream)
+            self._close_stream(stream)
 
     def shutdown(self) -> None:
         self.cancel()
-        self._await_stream_close()
+        self._await_pending_close()
 
-    def _begin_close_stream(self, stream) -> None:
-        """Start closing the stream in a background thread (non-blocking).
+    def _close_stream(self, stream) -> None:
+        """Close a stream, waiting up to 2 s inline.
 
-        The close is awaited lazily: either at the start of the next
-        recording (in ``start()``) or during ``shutdown()``.  This avoids
-        blocking the ``stop()`` response while the audio driver releases
-        the device.
+        If the close is still running after 2 s the thread reference is
+        saved so that ``_await_pending_close`` (called from ``start()``
+        and ``shutdown()``) can give it a little more time before
+        declaring the driver stuck.
         """
-        self._await_stream_close()
+        # Finish any earlier close first.
+        self._await_pending_close()
 
         def _close():
             try:
@@ -292,10 +293,14 @@ class Recorder:
             except Exception:
                 _log(traceback.format_exc())
 
-        self._close_thread = threading.Thread(target=_close, daemon=True)
-        self._close_thread.start()
+        thread = threading.Thread(target=_close, daemon=True)
+        thread.start()
+        thread.join(timeout=2.0)
+        if thread.is_alive():
+            # Not done yet – park it for start()/shutdown() to check.
+            self._close_thread = thread
 
-    def _await_stream_close(self) -> None:
+    def _await_pending_close(self) -> None:
         """Wait for a pending stream close to finish.  Sets *_force_exit* on timeout."""
         thread = self._close_thread
         if thread is None:
@@ -303,7 +308,8 @@ class Recorder:
         self._close_thread = None
         if not thread.is_alive():
             return
-        thread.join(timeout=3.0)
+        # Already waited 2 s in _close_stream; give 1 more second.
+        thread.join(timeout=1.0)
         if thread.is_alive():
             _log("[stt:audio-worker] Stream close stuck; forcing worker restart")
             self._force_exit = True
