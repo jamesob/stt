@@ -2,32 +2,43 @@
 
 **Like SuperWhisper, but free. Like Wispr Flow, but local.**
 
-Hold a key, speak, release — your words appear wherever your cursor is. Built for vibe coding and conversations with AI agents.
+Hold a key, speak, release -- your words appear wherever your cursor is. Built for vibe coding and conversations with AI agents.
 
 ![Demo](demo.gif)
 
-- **Free & open source** — no subscription, no cloud dependency
+- **Free & open source** -- no subscription, no cloud dependency
 - **Runs locally** on Apple Silicon via MLX Whisper or Parakeet
-- **Or use cloud** (Groq) when you prefer
-- **One command install** — `uv tool install git+https://github.com/bokan/stt.git`
+- **Or use cloud** (Groq) or any OpenAI-compatible server
+- **Cross-platform** -- macOS and Wayland Linux (Sway, Hyprland)
+- **One command install** -- `uv tool install git+https://github.com/bokan/stt.git`
 
 ## Features
 
-- **Global hotkey** — works in any application, configurable trigger key
-- **Hold-to-record** — no start/stop buttons, just hold and speak
-- **Auto-type** — transcribed text is typed directly into the active field
-- **Shift+record** — automatically sends Enter after typing (great for chat interfaces)
-- **Audio feedback** — subtle system sounds confirm recording state (can be disabled)
-- **Silence detection** — automatically skips transcription when no speech detected
-- **Slash commands** — say "slash help" to type `/help`
-- **Context prompts** — improve accuracy with domain-specific vocabulary
-- **Auto-updates** — notifies when a new version is available
+- **Global hotkey** -- works in any application, configurable trigger key
+- **Hold-to-record** -- no start/stop buttons, just hold and speak
+- **Auto-type** -- transcribed text is typed directly into the active field
+- **Shift+record** -- automatically sends Enter after typing (great for chat interfaces)
+- **Audio feedback** -- subtle system sounds confirm recording state (can be disabled)
+- **Silence detection** -- automatically skips transcription when no speech detected
+- **Slash commands** -- say "slash help" to type `/help`
+- **Context prompts** -- improve accuracy with domain-specific vocabulary
+- **Auto-updates** -- notifies when a new version is available
 
 ## Requirements
 
-- macOS with Apple Silicon (M1/M2/M3/M4)
+### macOS
+
+- Apple Silicon (M1/M2/M3/M4)
 - [UV](https://docs.astral.sh/uv/) package manager
 - **For cloud mode (optional):** [Groq API key](https://console.groq.com)
+
+### Linux (Wayland)
+
+- A wlroots-based compositor (Sway, Hyprland, etc.)
+- [UV](https://docs.astral.sh/uv/) package manager
+- System packages: `gtk4-layer-shell`, `wtype`, `wl-clipboard`, `libgirepository1.0-dev`, `gir1.2-gtk-4.0`
+- User must be in the `input` group for keyboard capture: `sudo usermod -aG input $USER && newgrp input`
+- A transcription server (OpenAI-compatible endpoint, Whisper.cpp HTTP, or Groq cloud)
 
 ## Installation
 
@@ -43,14 +54,36 @@ To update:
 uv tool install --reinstall git+https://github.com/bokan/stt.git
 ```
 
+### Linux system dependencies
+
+```bash
+# Debian/Ubuntu
+sudo apt install gtk4-layer-shell wtype wl-clipboard \
+    libgirepository1.0-dev gir1.2-gtk-4.0 gir1.2-gtk4layershell-1.0 \
+    pulseaudio-utils
+
+# Arch
+sudo pacman -S gtk4-layer-shell wtype wl-clipboard
+
+# Add yourself to the input group (required for keyboard capture)
+sudo usermod -aG input $USER
+newgrp input  # or log out and back in
+```
+
 ## Permissions
+
+### macOS
 
 STT needs macOS permissions to capture the global hotkey and type text into other apps.
 
-Grant these to **your terminal app** (iTerm2, Terminal, Warp, etc.) — not "stt":
+Grant these to **your terminal app** (iTerm2, Terminal, Warp, etc.) -- not "stt":
 
-- **Accessibility** — System Settings → Privacy & Security → Accessibility
-- **Input Monitoring** — System Settings → Privacy & Security → Input Monitoring
+- **Accessibility** -- System Settings > Privacy & Security > Accessibility
+- **Input Monitoring** -- System Settings > Privacy & Security > Input Monitoring
+
+### Linux
+
+STT uses evdev for keyboard capture, which requires membership in the `input` group. Text injection uses `wtype` and `wl-clipboard`, which work without special permissions on Wayland.
 
 ## Usage
 
@@ -70,8 +103,14 @@ stt
 Settings are stored in `~/.config/stt/.env`. Run `stt --config` to reconfigure, or edit directly:
 
 ```bash
-# Transcription provider: "mlx" (default), "whisper-cpp-http", "parakeet", or "groq"
+# Transcription provider: "mlx" (macOS default), "openai" (Linux default),
+#   "whisper-cpp-http", "parakeet", or "groq"
 PROVIDER=mlx
+
+# OpenAI-compatible server (default provider on Linux)
+OPENAI_BASE_URL=http://localhost:8000
+OPENAI_API_KEY=           # optional
+OPENAI_WHISPER_MODEL=whisper-large-v3
 
 # Local HTTP server URL (default: http://localhost:8080)
 WHISPER_CPP_HTTP_URL=http://localhost:8080
@@ -168,6 +207,19 @@ curl -X POST http://localhost:8080/inference \
 - Reuse whisper.cpp model across multiple applications
 - Hardware accelerated on CPU/NVIDIA
 - Configurable temperature, model, and decoding options
+
+### OpenAI-compatible Mode
+
+Works with any server that implements the OpenAI `/v1/audio/transcriptions` API (e.g., faster-whisper-server, whisper.cpp with OpenAI compat, LocalAI).
+
+```bash
+PROVIDER=openai
+OPENAI_BASE_URL=http://localhost:8000
+OPENAI_WHISPER_MODEL=whisper-large-v3
+# OPENAI_API_KEY=sk-...  # optional, if your server requires auth
+```
+
+This is the default provider on Linux.
 
 ### Prompt Examples
 

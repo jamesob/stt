@@ -126,6 +126,75 @@ class WhisperCPPHTTPProvider(TranscriptionProvider):
                 return None
 
 
+class OpenAICompatibleProvider(TranscriptionProvider):
+    """OpenAI-compatible API provider (local or remote servers)"""
+
+    def __init__(
+        self,
+        base_url: str = None,
+        api_key: str = None,
+        model: str = None,
+    ):
+        self.base_url = (
+            base_url
+            or os.environ.get("OPENAI_BASE_URL", "http://localhost:8000")
+        ).rstrip("/")
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        self.model = model or os.environ.get(
+            "OPENAI_WHISPER_MODEL", "whisper-large-v3"
+        )
+
+    @property
+    def name(self) -> str:
+        return f"OpenAI-compat ({self.model})"
+
+    def is_available(self) -> bool:
+        return bool(self.base_url)
+
+    def transcribe(
+        self, audio_file_path: str, language: str, prompt: str = None
+    ) -> str | None:
+        import requests
+
+        print("Transcribing...")
+
+        url = f"{self.base_url}/v1/audio/transcriptions"
+        headers: dict[str, str] = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        with open(audio_file_path, "rb") as audio_file:
+            files = {
+                "file": ("audio.wav", audio_file, "audio/wav"),
+            }
+            data: dict[str, str] = {
+                "model": self.model,
+                "response_format": "text",
+                "language": language,
+            }
+            if prompt:
+                data["prompt"] = prompt
+
+            try:
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    files=files,
+                    data=data,
+                    timeout=(5, 30),
+                )
+                response.raise_for_status()
+                return response.text.strip()
+            except requests.exceptions.RequestException as e:
+                print(f"API Error: {e}")
+                if hasattr(e, "response") and e.response is not None:
+                    try:
+                        print(f"Response: {e.response.text}")
+                    except Exception:
+                        pass
+                return None
+
+
 class _MLXWorkerClient:
     _WRITE_TIMEOUT_S = 2.0
     _WRITE_LOCK_TIMEOUT_S = 2.0
@@ -774,6 +843,7 @@ def get_provider(provider_name: str = None) -> TranscriptionProvider:
     providers = {
         "groq": GroqProvider,
         "mlx": MLXWhisperProvider,
+        "openai": OpenAICompatibleProvider,
         "parakeet": ParakeetProvider,
         "whisper-cpp-http": WhisperCPPHTTPProvider,
     }

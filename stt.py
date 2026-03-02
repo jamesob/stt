@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-STT - Speech-to-text for macOS.
+STT - Voice-to-text.
 
 Entry-point module. Keep import-time dependencies lightweight so `import stt`
 works in headless contexts (tests, harnesses, etc).
@@ -17,7 +17,7 @@ import threading
 from typing import Optional
 
 from stt_app import AppState, STTApp
-from stt_defaults import HOTKEY_DISPLAY_NAMES
+from stt_defaults import IS_LINUX, IS_MACOS, get_hotkey_display_name
 
 
 HEADLESS = os.environ.get("STT_HEADLESS") == "1"
@@ -99,8 +99,26 @@ def check_accessibility_permissions() -> bool:
         options = {"AXTrustedCheckOptionPrompt": True}
         return bool(AXIsProcessTrustedWithOptions(options))
     except ImportError:
-        print("⚠️  Could not check accessibility permissions")
+        print("Could not check accessibility permissions")
         return True
+
+
+def check_linux_permissions() -> bool:
+    """Warn if user is not in the 'input' group (needed for evdev)."""
+    import grp
+    try:
+        input_gid = grp.getgrnam("input").gr_gid
+        if input_gid not in os.getgroups():
+            print(
+                "Warning: User not in 'input' group. "
+                "Keyboard capture may fail.\n"
+                "  Fix: sudo usermod -aG input $USER && newgrp input"
+            )
+            return False
+    except KeyError:
+        print("Warning: 'input' group does not exist on this system.")
+        return False
+    return True
 
 
 def _select_audio_device(*, saved_device_name: str, save_device_fn) -> str | None:
@@ -165,7 +183,6 @@ def main() -> None:
         mark_initialized,
         save_config,
     )
-    from text_injector import paste_text
 
     load_env_startup()
     cfg = Config.from_env()
@@ -188,8 +205,8 @@ def main() -> None:
         run_setup(save, current_config=current_config, reconfigure=True)
         return
 
-    # Dev-only permission flow testing.
-    if "--test-permissions" in sys.argv:
+    # Dev-only permission flow testing (macOS only).
+    if "--test-permissions" in sys.argv and IS_MACOS:
         from onboarding import (
             console,
             get_terminal_app,
@@ -202,23 +219,31 @@ def main() -> None:
         show_permission_error()
         if Confirm.ask("Open Accessibility settings?", default=True):
             open_accessibility_settings()
-            console.print("\n[dim]Enable the permission, then come back here.[/dim]\n")
+            console.print(
+                "\n[dim]Enable the permission, then come back here.[/dim]\n"
+            )
             Confirm.ask("Done with Accessibility?", default=True)
         if Confirm.ask("Open Input Monitoring settings?", default=True):
             open_input_monitoring_settings()
-            console.print("\n[dim]Enable the permission, then come back here.[/dim]\n")
+            console.print(
+                "\n[dim]Enable the permission, then come back here.[/dim]\n"
+            )
             Confirm.ask("Done with Input Monitoring?", default=True)
 
         terminal = get_terminal_app()
         console.print("\n[green]Permission setup complete.[/green]")
-        console.print(f"[yellow]Restart {terminal} and run STT again.[/yellow]\n")
+        console.print(
+            f"[yellow]Restart {terminal} and run STT again.[/yellow]\n"
+        )
         return
 
     # Ensure only one instance.
     if not acquire_lock():
         from rich.console import Console
 
-        Console().print("[red]Another instance of STT is already running[/red]")
+        Console().print(
+            "[red]Another instance of STT is already running[/red]"
+        )
         raise SystemExit(1)
     atexit.register(release_lock)
 
@@ -240,7 +265,7 @@ def main() -> None:
 
     console = Console()
     console.print()
-    console.print("[bold]STT[/bold] [dim]Voice-to-text for macOS[/dim]")
+    console.print("[bold]STT[/bold] [dim]Voice-to-text[/dim]")
     console.print("[dim]https://github.com/bokan/stt[/dim]")
     console.print()
 
@@ -251,10 +276,17 @@ def main() -> None:
     init_error = None
     provider_available = False
 
-    status = Status("[dim]Initializing...[/dim]", console=console, spinner="dots")
+    status = Status(
+        "[dim]Initializing...[/dim]", console=console, spinner="dots"
+    )
     status.start()
 
-    slow_timer = threading.Timer(2.0, lambda: status.update("[dim]Initializing... first run may take ~30s[/dim]"))
+    slow_timer = threading.Timer(
+        2.0,
+        lambda: status.update(
+            "[dim]Initializing... first run may take ~30s[/dim]"
+        ),
+    )
     slow_timer.start()
     try:
         os.environ["PROVIDER"] = cfg.provider
@@ -267,7 +299,7 @@ def main() -> None:
         status.stop()
 
     if init_error:
-        console.print(f"[red]✗[/red] {init_error}")
+        console.print(f"[red]x[/red] {init_error}")
         raise SystemExit(1)
 
     if not provider_available:
@@ -285,35 +317,48 @@ def main() -> None:
                 "hotkey": cfg.hotkey,
                 "audio_device": cfg.audio_device,
             }
-            run_setup(save, current_config=current_config, reconfigure=True)
+            run_setup(
+                save, current_config=current_config, reconfigure=True
+            )
             reload_env_files()
             cfg = Config.from_env()
             provider = get_provider(cfg.provider)
         else:
-            console.print(f"[red]✗[/red] Provider '{cfg.provider}' is not available")
+            console.print(
+                f"[red]x[/red] Provider '{cfg.provider}' is not available"
+            )
             if cfg.provider == "mlx":
-                console.print("  [dim]Install with: pip install mlx-whisper[/dim]")
+                console.print(
+                    "  [dim]Install with: pip install mlx-whisper[/dim]"
+                )
             raise SystemExit(1)
 
     assert provider is not None
-    console.print(f"[green]✓[/green] Provider: [cyan]{provider.name}[/cyan]")
+    console.print(
+        f"[green]>[/green] Provider: [cyan]{provider.name}[/cyan]"
+    )
     provider.warmup()
 
-    # Check accessibility permissions.
-    if not check_accessibility_permissions():
-        from onboarding import (
-            get_terminal_app,
-            open_accessibility_settings,
-            prompt_open_settings,
-            show_permission_error,
-        )
+    # Permission checks (platform-specific).
+    if IS_MACOS:
+        if not check_accessibility_permissions():
+            from onboarding import (
+                get_terminal_app,
+                open_accessibility_settings,
+                prompt_open_settings,
+                show_permission_error,
+            )
 
-        show_permission_error()
-        if prompt_open_settings():
-            open_accessibility_settings()
-        terminal = get_terminal_app()
-        console.print(f"\n[yellow]Restart {terminal} and run STT again.[/yellow]")
-        raise SystemExit(1)
+            show_permission_error()
+            if prompt_open_settings():
+                open_accessibility_settings()
+            terminal = get_terminal_app()
+            console.print(
+                f"\n[yellow]Restart {terminal} and run STT again.[/yellow]"
+            )
+            raise SystemExit(1)
+    elif IS_LINUX:
+        check_linux_permissions()
 
     # Select audio device (uses saved device or prompts).
     def save_device(device_name: str) -> None:
@@ -321,32 +366,86 @@ def main() -> None:
         os.environ["AUDIO_DEVICE"] = device_name
         print(f"  (saved to {env_path})")
 
-    device_name = _select_audio_device(saved_device_name=cfg.audio_device, save_device_fn=save_device)
+    device_name = _select_audio_device(
+        saved_device_name=cfg.audio_device, save_device_fn=save_device
+    )
     if device_name:
-        console.print(f"[green]✓[/green] Device: [cyan]{device_name}[/cyan]")
+        console.print(
+            f"[green]>[/green] Device: [cyan]{device_name}[/cyan]"
+        )
     else:
-        console.print("[green]✓[/green] Device: [cyan]System default[/cyan]")
+        console.print(
+            "[green]>[/green] Device: [cyan]System default[/cyan]"
+        )
 
-    console.print("[bright_black]Hint:[/bright_black] [dim]Run[/dim] [grey70]stt --config[/grey70] [dim]to change settings[/dim]")
+    console.print(
+        "[bright_black]Hint:[/bright_black] "
+        "[dim]Run[/dim] [grey70]stt --config[/grey70] "
+        "[dim]to change settings[/dim]"
+    )
     console.print()
 
     # Ensure default prompts exist before PromptOverlay loads.
     ensure_default_prompts()
 
-    # UI imports (AppKit/Quartz/rumps) after config and provider are ready.
-    from overlay import get_overlay
+    # Platform-specific UI wiring.
     from input_controller import InputController
-    from menubar import STTMenuBar
 
-    overlay = get_overlay()
+    if IS_LINUX:
+        from linux_overlay import get_overlay
 
-    def play_sound(sound_path: str) -> None:
-        if not cfg.sound_enabled:
-            return
-        subprocess.Popen(["afplay", sound_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        overlay = get_overlay()
 
-    def type_text(text: str, send_enter: bool = False) -> None:
-        paste_text(text, send_enter=send_enter, method="osascript")
+        # Freedesktop sound paths
+        _SOUND_MAP = {
+            "/System/Library/Sounds/Tink.aiff": (
+                "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga"
+            ),
+            "/System/Library/Sounds/Pop.aiff": (
+                "/usr/share/sounds/freedesktop/stereo/message.oga"
+            ),
+            "/System/Library/Sounds/Basso.aiff": (
+                "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga"
+            ),
+        }
+
+        def play_sound(sound_path: str) -> None:
+            if not cfg.sound_enabled:
+                return
+            mapped = _SOUND_MAP.get(sound_path, sound_path)
+            for cmd in ("paplay", "aplay"):
+                try:
+                    subprocess.Popen(
+                        [cmd, mapped],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return
+                except FileNotFoundError:
+                    continue
+
+        from linux_text_injector import paste_text as linux_paste
+
+        def type_text(text: str, send_enter: bool = False) -> None:
+            linux_paste(text, send_enter=send_enter)
+
+    else:
+        from overlay import get_overlay
+        from text_injector import paste_text
+
+        overlay = get_overlay()
+
+        def play_sound(sound_path: str) -> None:
+            if not cfg.sound_enabled:
+                return
+            subprocess.Popen(
+                ["afplay", sound_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+        def type_text(text: str, send_enter: bool = False) -> None:
+            paste_text(text, send_enter=send_enter, method="osascript")
 
     app = STTApp(
         device_name=device_name,
@@ -360,13 +459,17 @@ def main() -> None:
         keep_recordings=cfg.keep_recordings,
     )
 
-    hotkey_name = HOTKEY_DISPLAY_NAMES.get(cfg.hotkey, cfg.hotkey)
-    console.print(f"[bold green]Ready[/bold green] [dim]│[/dim] Hold [cyan]{hotkey_name}[/cyan] to record, +Shift ↵, Esc ✗")
+    hotkey_name = get_hotkey_display_name(cfg.hotkey)
+    console.print(
+        f"[bold green]Ready[/bold green] [dim]|[/dim] "
+        f"Hold [cyan]{hotkey_name}[/cyan] to record, +Shift Enter, Esc cancel"
+    )
     console.print()
 
     controller = InputController(app, hotkey_id=cfg.hotkey)
 
     config_watcher: Optional[ConfigWatcher] = None
+    menubar = None  # Only set on macOS
 
     def cleanup():
         if config_watcher:
@@ -375,23 +478,26 @@ def main() -> None:
 
     atexit.register(cleanup)
 
-    def on_sound_toggle(enabled: bool):
-        nonlocal cfg
-        cfg.sound_enabled = enabled
-        save_config("SOUND_ENABLED", str(enabled).lower())
-        os.environ["SOUND_ENABLED"] = str(enabled).lower()
+    if IS_MACOS:
+        from menubar import STTMenuBar
 
-    menubar = STTMenuBar(
-        stt_app=app,
-        hotkey_name=hotkey_name,
-        provider_name=provider.name,
-        sound_enabled=cfg.sound_enabled,
-        config_file=CONFIG_FILE,
-        on_sound_toggle=on_sound_toggle,
-        on_quit=cleanup,
-    )
+        def on_sound_toggle(enabled: bool):
+            nonlocal cfg
+            cfg.sound_enabled = enabled
+            save_config("SOUND_ENABLED", str(enabled).lower())
+            os.environ["SOUND_ENABLED"] = str(enabled).lower()
 
-    # Config change handler (watcher starts only after menubar exists).
+        menubar = STTMenuBar(
+            stt_app=app,
+            hotkey_name=hotkey_name,
+            provider_name=provider.name,
+            sound_enabled=cfg.sound_enabled,
+            config_file=CONFIG_FILE,
+            on_sound_toggle=on_sound_toggle,
+            on_quit=cleanup,
+        )
+
+    # Config change handler.
     def on_config_change(new_cfg: Config, changes: dict):
         nonlocal cfg, provider, hotkey_name
         cfg = new_cfg
@@ -404,35 +510,46 @@ def main() -> None:
             print(f"   Language: {cfg.language}")
         if "HOTKEY" in changes:
             controller.set_hotkey_id(cfg.hotkey)
-            hotkey_name = HOTKEY_DISPLAY_NAMES.get(cfg.hotkey, cfg.hotkey)
-            menubar.update_hotkey_name(hotkey_name)
+            hotkey_name = get_hotkey_display_name(cfg.hotkey)
+            if menubar:
+                menubar.update_hotkey_name(hotkey_name)
             print(f"   Hotkey: {hotkey_name}")
         if "PROMPT" in changes:
             app.prompt = cfg.prompt
             print(f"   Prompt: {cfg.prompt or '(empty)'}")
         if "KEEP_RECORDINGS" in changes:
             app.keep_recordings = cfg.keep_recordings
-            print(f"   Keep recordings: {'enabled' if cfg.keep_recordings else 'disabled'}")
+            print(
+                "   Keep recordings: "
+                f"{'enabled' if cfg.keep_recordings else 'disabled'}"
+            )
         if "SOUND_ENABLED" in changes:
-            menubar.update_sound_enabled(cfg.sound_enabled)
-            print(f"   Sound: {'enabled' if cfg.sound_enabled else 'disabled'}")
+            if menubar:
+                menubar.update_sound_enabled(cfg.sound_enabled)
+            print(
+                "   Sound: "
+                f"{'enabled' if cfg.sound_enabled else 'disabled'}"
+            )
 
-        if (
-            "PROVIDER" in changes
-            or "WHISPER_MODEL" in changes
-            or "GROQ_API_KEY" in changes
-            or "WHISPER_CPP_HTTP_URL" in changes
-            or "PARAKEET_MODEL" in changes
-        ):
+        provider_keys = {
+            "PROVIDER", "WHISPER_MODEL", "GROQ_API_KEY",
+            "WHISPER_CPP_HTTP_URL", "PARAKEET_MODEL",
+            "OPENAI_BASE_URL", "OPENAI_API_KEY",
+            "OPENAI_WHISPER_MODEL",
+        }
+        if provider_keys & set(changes):
             try:
                 provider = get_provider(cfg.provider)
                 if provider.is_available():
                     provider.warmup()
                     app.provider = provider
-                    menubar.update_provider_name(provider.name)
+                    if menubar:
+                        menubar.update_provider_name(provider.name)
                     print(f"   Provider: {provider.name}")
                 else:
-                    print(f"   Provider '{cfg.provider}' not available")
+                    print(
+                        f"   Provider '{cfg.provider}' not available"
+                    )
             except Exception as e:
                 print(f"   Failed to reinitialize provider: {e}")
 
@@ -440,7 +557,31 @@ def main() -> None:
     config_watcher.start()
 
     controller.start()
-    menubar.run()
+
+    if menubar:
+        menubar.run()
+    elif IS_LINUX:
+        # On Linux: use GLib main loop if GTK overlay is active,
+        # otherwise block on an event.
+        try:
+            from gi.repository import GLib
+            loop = GLib.MainLoop()
+            try:
+                loop.run()
+            except KeyboardInterrupt:
+                loop.quit()
+        except ImportError:
+            stop = threading.Event()
+            try:
+                stop.wait()
+            except KeyboardInterrupt:
+                pass
+    else:
+        stop = threading.Event()
+        try:
+            stop.wait()
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == "__main__":

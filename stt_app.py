@@ -13,7 +13,7 @@ from audio_worker_client import AudioWorkerClient
 from issue_capture import maybe_capture_mlx_issue
 from providers import get_provider
 from recordings import DEFAULT_RECORDINGS_DIR, DEFAULT_RECORDINGS_MAX_BYTES, archive_recording
-from stt_defaults import HOTKEY_DISPLAY_NAMES, NullOverlay, noop_sound, noop_text_injector
+from stt_defaults import NullOverlay, get_hotkey_display_name, noop_sound, noop_text_injector
 
 
 SAMPLE_RATE = 16000  # Whisper expects 16kHz
@@ -288,7 +288,7 @@ class STTApp:
         from rich.console import Console
 
         console = Console()
-        hotkey_name = HOTKEY_DISPLAY_NAMES.get(self.hotkey_id, self.hotkey_id)
+        hotkey_name = get_hotkey_display_name(self.hotkey_id)
         console.print(
             f"\n[bold green]Ready[/bold green] [dim]│[/dim] Hold [cyan]{hotkey_name}[/cyan] to record, +Shift ↵, Esc ✗"
         )

@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from stt_defaults import IS_LINUX, IS_MACOS, get_hotkey_display_name
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
@@ -93,13 +95,22 @@ WHISPER_MODELS = [
     ("base", "Minimal", "~150 MB", "<1 min"),
 ]
 
-# Provider options
-PROVIDERS = [
+# Provider options (filtered per platform below)
+_PROVIDERS_MACOS = [
     ("mlx", "Local MLX Whisper", "Apple Silicon, offline"),
     ("whisper-cpp-http", "Whisper.cpp HTTP", "Local server, fast"),
     ("groq", "Groq Cloud", "Fast, requires API key"),
     ("parakeet", "Local Parakeet", "Apple Silicon, English only"),
+    ("openai", "OpenAI-compatible", "Local/remote server"),
 ]
+
+_PROVIDERS_LINUX = [
+    ("openai", "OpenAI-compatible", "Local/remote server"),
+    ("whisper-cpp-http", "Whisper.cpp HTTP", "Local server, fast"),
+    ("groq", "Groq Cloud", "Fast, requires API key"),
+]
+
+PROVIDERS = _PROVIDERS_LINUX if IS_LINUX else _PROVIDERS_MACOS
 
 
 def welcome_banner(reconfigure: bool = False) -> None:
@@ -117,8 +128,8 @@ def welcome_banner(reconfigure: bool = False) -> None:
         console.print(
             Panel.fit(
                 "[bold blue]Welcome to STT[/bold blue]\n\n"
-                "Voice-to-text for macOS vibe coding.\n"
-                "Hold a key, speak, release — words appear.\n\n"
+                "Voice-to-text for vibe coding.\n"
+                "Hold a key, speak, release -- words appear.\n\n"
                 "[dim]Let's get you set up...[/dim]",
                 border_style="blue",
                 padding=(1, 2),
@@ -268,12 +279,12 @@ def select_audio_device(current: str = None) -> str | None:
 
 
 HOTKEYS = [
-    ("cmd_r", "Right Command"),
-    ("cmd_l", "Left Command"),
-    ("alt_r", "Right Option"),
-    ("alt_l", "Left Option"),
-    ("ctrl_r", "Right Control"),
-    ("shift_r", "Right Shift"),
+    ("cmd_r", get_hotkey_display_name("cmd_r")),
+    ("cmd_l", get_hotkey_display_name("cmd_l")),
+    ("alt_r", get_hotkey_display_name("alt_r")),
+    ("alt_l", get_hotkey_display_name("alt_l")),
+    ("ctrl_r", get_hotkey_display_name("ctrl_r")),
+    ("shift_r", get_hotkey_display_name("shift_r")),
 ]
 
 
@@ -535,6 +546,27 @@ def run_setup(save_config_fn, current_config: dict = None, reconfigure: bool = F
 
     elif provider == "parakeet":
         console.print("[dim]Parakeet uses a fixed model (English only).[/dim]\n")
+
+    elif provider == "openai":
+        console.print("[bold]OpenAI-compatible server[/bold]\n")
+        base_url = Prompt.ask(
+            "Base URL",
+            default=current.get("openai_base_url", "http://localhost:8000"),
+        )
+        save_config_fn("OPENAI_BASE_URL", base_url)
+        api_key = Prompt.ask(
+            "API key (optional, press Enter to skip)",
+            default=current.get("openai_api_key", ""),
+            show_default=False,
+        )
+        if api_key:
+            save_config_fn("OPENAI_API_KEY", api_key)
+        model_name = Prompt.ask(
+            "Model name",
+            default=current.get("openai_whisper_model", "whisper-large-v3"),
+        )
+        save_config_fn("OPENAI_WHISPER_MODEL", model_name)
+        console.print()
 
     # Step 3: Audio device & hotkey
     device = select_audio_device(current=current.get("audio_device"))

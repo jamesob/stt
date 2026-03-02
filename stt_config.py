@@ -10,6 +10,8 @@ from dotenv import dotenv_values
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+from stt_defaults import IS_LINUX
+
 
 CONFIG_DIR = os.path.expanduser("~/.config/stt")
 CONFIG_FILE = os.path.join(CONFIG_DIR, ".env")
@@ -20,13 +22,19 @@ _BASE_ENV_KEYS = frozenset(os.environ.keys())
 _MANAGED_ENV_KEYS: set[str] = set()
 
 
+_DEFAULT_PROVIDER = "openai" if IS_LINUX else "mlx"
+
+
 @dataclass
 class Config:
-    provider: str = "mlx"
+    provider: str = _DEFAULT_PROVIDER
     groq_api_key: str = ""
     whisper_model: str = ""
     parakeet_model: str = ""
     whisper_cpp_http_url: str = "http://localhost:8080"
+    openai_base_url: str = "http://localhost:8000"
+    openai_api_key: str = ""
+    openai_whisper_model: str = "whisper-large-v3"
     audio_device: str = ""  # device name
     language: str = "en"
     hotkey: str = "cmd_r"
@@ -37,17 +45,30 @@ class Config:
     @staticmethod
     def from_env() -> "Config":
         return Config(
-            provider=os.environ.get("PROVIDER", "mlx"),
+            provider=os.environ.get("PROVIDER", _DEFAULT_PROVIDER),
             groq_api_key=os.environ.get("GROQ_API_KEY", ""),
             whisper_model=os.environ.get("WHISPER_MODEL", ""),
             parakeet_model=os.environ.get("PARAKEET_MODEL", ""),
-            whisper_cpp_http_url=os.environ.get("WHISPER_CPP_HTTP_URL", "http://localhost:8080"),
+            whisper_cpp_http_url=os.environ.get(
+                "WHISPER_CPP_HTTP_URL", "http://localhost:8080"
+            ),
+            openai_base_url=os.environ.get(
+                "OPENAI_BASE_URL", "http://localhost:8000"
+            ),
+            openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
+            openai_whisper_model=os.environ.get(
+                "OPENAI_WHISPER_MODEL", "whisper-large-v3"
+            ),
             audio_device=os.environ.get("AUDIO_DEVICE", ""),
             language=os.environ.get("LANGUAGE", "en"),
             hotkey=os.environ.get("HOTKEY", "cmd_r"),
             prompt=os.environ.get("PROMPT", ""),
-            sound_enabled=os.environ.get("SOUND_ENABLED", "true").lower() == "true",
-            keep_recordings=os.environ.get("KEEP_RECORDINGS", "false").lower() == "true",
+            sound_enabled=os.environ.get(
+                "SOUND_ENABLED", "true"
+            ).lower() == "true",
+            keep_recordings=os.environ.get(
+                "KEEP_RECORDINGS", "false"
+            ).lower() == "true",
         )
 
     def to_env_dict(self) -> dict[str, str]:
@@ -57,6 +78,9 @@ class Config:
             "WHISPER_MODEL": self.whisper_model,
             "PARAKEET_MODEL": self.parakeet_model,
             "WHISPER_CPP_HTTP_URL": self.whisper_cpp_http_url,
+            "OPENAI_BASE_URL": self.openai_base_url,
+            "OPENAI_API_KEY": self.openai_api_key,
+            "OPENAI_WHISPER_MODEL": self.openai_whisper_model,
             "AUDIO_DEVICE": self.audio_device,
             "LANGUAGE": self.language,
             "HOTKEY": self.hotkey,

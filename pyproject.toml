@@ -1,7 +1,7 @@
 [project]
 name = "stt"
 dynamic = ["version"]
-description = "Like SuperWhisper, but free. Like Wispr Flow, but local. Voice-to-text for macOS vibe coding."
+description = "Like SuperWhisper, but free. Like Wispr Flow, but local. Voice-to-text for macOS and Linux."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -11,14 +11,16 @@ dependencies = [
     "pynput>=1.7.6",
     "requests>=2.28.0",
     "python-dotenv>=1.0.0",
-    "mlx-whisper>=0.4.0",
-    "rumps>=0.4.0",
     "watchdog>=3.0.0",
-    "numba>=0.60.0",
-    "parakeet-mlx>=0.5.0",
     "metaphone>=0.6",
     "packaging>=21.0",
     "rich>=13.0.0",
+    "mlx-whisper>=0.4.0; sys_platform == 'darwin'",
+    "rumps>=0.4.0; sys_platform == 'darwin'",
+    "numba>=0.60.0; sys_platform == 'darwin'",
+    "parakeet-mlx>=0.5.0; sys_platform == 'darwin'",
+    "evdev>=1.6.0; sys_platform == 'linux'",
+    "PyGObject>=3.42.0; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
@@ -38,7 +40,7 @@ source = "vcs"
 version-file = "_version.py"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["stt.py", "stt_app.py", "stt_config.py", "stt_defaults.py", "recordings.py", "issue_capture.py", "audio_worker_client.py", "text_injector.py", "input_controller.py", "providers.py", "menubar.py", "mlx_worker.py", "parakeet_worker.py", "audio_worker.py", "postprocess.py", "overlay.py", "onboarding.py", "prompt_overlay.py", "prompts_config.py"]
+only-include = ["stt.py", "stt_app.py", "stt_config.py", "stt_defaults.py", "recordings.py", "issue_capture.py", "audio_worker_client.py", "text_injector.py", "input_controller.py", "providers.py", "menubar.py", "mlx_worker.py", "parakeet_worker.py", "audio_worker.py", "postprocess.py", "overlay.py", "onboarding.py", "prompt_overlay.py", "prompts_config.py", "evdev_listener.py", "linux_overlay.py", "linux_text_injector.py"]
 
 [tool.hatch.build.targets.wheel.sources]
 "stt.py" = "stt.py"
@@ -60,3 +62,6 @@ only-include = ["stt.py", "stt_app.py", "stt_config.py", "stt_defaults.py", "rec
 "onboarding.py" = "onboarding.py"
 "prompt_overlay.py" = "prompt_overlay.py"
 "prompts_config.py" = "prompts_config.py"
+"evdev_listener.py" = "evdev_listener.py"
+"linux_overlay.py" = "linux_overlay.py"
+"linux_text_injector.py" = "linux_text_injector.py"

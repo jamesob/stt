@@ -5,11 +5,25 @@ import threading
 import time
 from typing import Optional
 
-from pynput import keyboard, mouse
+from pynput import keyboard
 
-from prompt_overlay import PromptOverlay
+from stt_defaults import IS_LINUX
 from stt_app import STTApp
-from text_injector import paste_text
+
+try:
+    from pynput import mouse
+except Exception:
+    mouse = None  # type: ignore[assignment]
+
+try:
+    from prompt_overlay import PromptOverlay
+except ImportError:
+    PromptOverlay = None  # type: ignore[assignment,misc]
+
+try:
+    from text_injector import paste_text
+except ImportError:
+    paste_text = None  # type: ignore[assignment]
 
 
 HOTKEYS: dict[str, dict[str, object]] = {
@@ -83,15 +97,44 @@ class InputController:
         self._trigger_flag_mask = None
         self._trigger_key_name = "Right ⌘"
 
-        self._prompt_overlay = PromptOverlay(on_select=self._on_prompt_select)
-        self._listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
-        self._mouse_listener = mouse.Listener(on_click=self._on_click)
+        if PromptOverlay is not None:
+            self._prompt_overlay = PromptOverlay(
+                on_select=self._on_prompt_select
+            )
+        else:
+            self._prompt_overlay = None
+
+        self._listener = self._make_keyboard_listener()
+
+        if mouse is not None and not IS_LINUX:
+            try:
+                self._mouse_listener = mouse.Listener(
+                    on_click=self._on_click
+                )
+            except Exception:
+                self._mouse_listener = None
+        else:
+            self._mouse_listener = None
+
         self._fallback_thread: threading.Thread | None = None
+        self._modifier_tap_loop = None  # Quartz CFRunLoop, if active
 
         self.set_hotkey_id(hotkey_id)
 
+    def _make_keyboard_listener(self):
+        if IS_LINUX:
+            from evdev_listener import EvdevKeyboardListener
+            return EvdevKeyboardListener(
+                on_press=self._on_press,
+                on_release=self._on_release,
+            )
+        return keyboard.Listener(
+            on_press=self._on_press,
+            on_release=self._on_release,
+        )
+
     @property
-    def prompt_overlay(self) -> PromptOverlay:
+    def prompt_overlay(self):
         return self._prompt_overlay
 
     @property
@@ -135,7 +178,9 @@ class InputController:
 
     def start(self) -> None:
         self._listener.start()
-        self._mouse_listener.start()
+        if self._mouse_listener:
+            self._mouse_listener.start()
+        self._start_modifier_tap()
         self._start_release_fallback()
 
     def stop(self) -> None:
@@ -143,12 +188,22 @@ class InputController:
             self._listener.stop()
         except Exception:
             pass
+        if self._mouse_listener:
+            try:
+                self._mouse_listener.stop()
+            except Exception:
+                pass
         try:
-            self._mouse_listener.stop()
+            if self._modifier_tap_loop:
+                from Quartz import CFRunLoopStop
+                CFRunLoopStop(self._modifier_tap_loop)
         except Exception:
             pass
 
     def _on_prompt_select(self, text: str, send_enter: bool = False):
+        if paste_text is None:
+            return
+
         def do_paste():
             # Delete the special char that Option+key produced.
             backspace_script = """
@@ -156,7 +211,9 @@ class InputController:
                 key code 51
             end tell
             """
-            subprocess.run(["osascript", "-e", backspace_script], timeout=2)
+            subprocess.run(
+                ["osascript", "-e", backspace_script], timeout=2
+            )
             time.sleep(0.03)
             paste_text(text, send_enter=send_enter, method="cgevent")
 
@@ -195,7 +252,7 @@ class InputController:
                 with self._lock:
                     prompt_overlay_active = self._prompt_overlay_active
 
-                if prompt_overlay_active:
+                if prompt_overlay_active and self._prompt_overlay:
                     self._prompt_overlay.hide()
                     with self._lock:
                         self._prompt_overlay_active = False
@@ -220,7 +277,7 @@ class InputController:
 
             with self._lock:
                 prompt_overlay_active = self._prompt_overlay_active
-            if prompt_overlay_active and hasattr(key, "vk") and key.vk is not None:
+            if prompt_overlay_active and self._prompt_overlay and hasattr(key, "vk") and key.vk is not None:
                 char = VK_TO_CHAR.get(int(key.vk))
                 if char and self._prompt_overlay.handle_key(char):
                     with self._lock:
@@ -248,7 +305,7 @@ class InputController:
 
             if key == keyboard.Key.alt_r:
                 with self._lock:
-                    if self._prompt_overlay_active:
+                    if self._prompt_overlay_active and self._prompt_overlay:
                         self._prompt_overlay.hide()
                         self._prompt_overlay_active = False
                 if not trigger_is_alt:
@@ -296,6 +353,102 @@ class InputController:
             threading.Thread(target=self._app.process_recording, args=(True,), daemon=True).start()
         """
         return
+
+    def _start_modifier_tap(self) -> None:
+        """Direct Quartz event tap for modifier keys from all keyboards.
+
+        Bypasses pynput's modifier handling to reliably capture events
+        from external USB/Bluetooth keyboards. Uses per-key device flags
+        (NX_DEVICE*KEYMASK) so left/right are correctly distinguished
+        even when the opposite side is held.
+        """
+        try:
+            from Quartz import (
+                CGEventTapCreate,
+                CGEventTapEnable,
+                CGEventMaskBit,
+                CGEventGetIntegerValueField,
+                CGEventGetFlags,
+                kCGEventFlagsChanged,
+                kCGSessionEventTap,
+                kCGHeadInsertEventTap,
+                kCGEventTapOptionListenOnly,
+                kCGKeyboardEventKeycode,
+                CFMachPortCreateRunLoopSource,
+                CFRunLoopAddSource,
+                CFRunLoopGetCurrent,
+                CFRunLoopRun,
+                kCFRunLoopCommonModes,
+            )
+        except ImportError:
+            return
+
+        # macOS virtual keycode -> pynput Key
+        vk_to_key = {
+            0x38: keyboard.Key.shift_l,
+            0x3C: keyboard.Key.shift_r,
+            0x37: keyboard.Key.cmd_l,
+            0x36: keyboard.Key.cmd_r,
+            0x3A: keyboard.Key.alt_l,
+            0x3D: keyboard.Key.alt_r,
+            0x3B: keyboard.Key.ctrl_l,
+            0x3E: keyboard.Key.ctrl_r,
+        }
+
+        # macOS virtual keycode -> NX_DEVICE* flag for that specific key.
+        # These per-key flags let us detect press/release even when the
+        # opposite-side modifier is simultaneously held.
+        vk_to_device_flag = {
+            0x38: 0x00000002,  # NX_DEVICELSHIFTKEYMASK
+            0x3C: 0x00000004,  # NX_DEVICERSHIFTKEYMASK
+            0x37: 0x00000008,  # NX_DEVICELCMDKEYMASK
+            0x36: 0x00000010,  # NX_DEVICERCMDKEYMASK
+            0x3A: 0x00000020,  # NX_DEVICELALTKEYMASK
+            0x3D: 0x00000040,  # NX_DEVICERALTKEYMASK
+            0x3B: 0x00002000,  # NX_DEVICELCTLKEYMASK
+            0x3E: 0x00004000,  # NX_DEVICERCTLKEYMASK
+        }
+
+        controller = self
+
+        def callback(proxy, event_type, event, refcon):
+            keycode = CGEventGetIntegerValueField(
+                event, kCGKeyboardEventKeycode,
+            )
+            key = vk_to_key.get(keycode)
+            if key is None:
+                return event
+
+            device_flag = vk_to_device_flag.get(keycode, 0)
+            flags = CGEventGetFlags(event)
+
+            if flags & device_flag:
+                controller._on_press(key)
+            else:
+                controller._on_release(key)
+            return event
+
+        def run():
+            tap = CGEventTapCreate(
+                kCGSessionEventTap,
+                kCGHeadInsertEventTap,
+                kCGEventTapOptionListenOnly,
+                CGEventMaskBit(kCGEventFlagsChanged),
+                callback,
+                None,
+            )
+            if not tap:
+                return
+            src = CFMachPortCreateRunLoopSource(None, tap, 0)
+            controller._modifier_tap_loop = CFRunLoopGetCurrent()
+            CFRunLoopAddSource(
+                controller._modifier_tap_loop, src,
+                kCFRunLoopCommonModes,
+            )
+            CGEventTapEnable(tap, True)
+            CFRunLoopRun()
+
+        threading.Thread(target=run, daemon=True, name="modifier-tap").start()
 
     def _start_release_fallback(self) -> None:
         if self._fallback_thread and self._fallback_thread.is_alive():
