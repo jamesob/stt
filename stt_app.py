@@ -337,7 +337,9 @@ class STTApp:
                 print("⚠️  Audio too quiet (silence), skipping...")
             else:
                 self._set_state(AppState.TRANSCRIBING)
+                t0 = time.monotonic()
                 text = self.transcribe_audio(wav_path)
+                elapsed = time.monotonic() - t0
 
                 with self._lock:
                     if op_id != self._op_id or not self._processing:
@@ -347,7 +349,7 @@ class STTApp:
                     text = self.transform_text(text)
                     transcribed_text = text
                     self.type_text(text, send_enter=send_enter)
-                    print(f"✓ {text}")
+                    print(f"✓ [{elapsed:.2f}s] {text}")
                 else:
                     if maybe_capture_mlx_issue(
                         provider=self.provider,
@@ -356,7 +358,10 @@ class STTApp:
                         prompt=self.prompt,
                     ):
                         wav_path = None
-                    print("No transcription returned")
+                    print(
+                        f"No transcription returned"
+                        f" ({elapsed:.2f}s)"
+                    )
 
             self.print_ready_prompt()
         except Exception as e:

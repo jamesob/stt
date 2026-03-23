@@ -100,138 +100,95 @@ stt
 
 ## Configuration
 
-Settings are stored in `~/.config/stt/.env`. Run `stt --config` to reconfigure, or edit directly:
+Settings are stored in `~/.config/stt/config.yml`. Run `stt --config` to reconfigure, or edit directly. See [`config.sample.yml`](config.sample.yml) for all options.
 
-```bash
-# Transcription provider: "mlx" (macOS default), "openai" (Linux default),
-#   "whisper-cpp-http", "parakeet", or "groq"
-PROVIDER=mlx
+```yaml
+provider: openai
+language: en
+hotkey: cmd_r
+sound_enabled: true
 
-# OpenAI-compatible server (default provider on Linux)
-OPENAI_BASE_URL=http://localhost:8000
-OPENAI_API_KEY=           # optional
-OPENAI_WHISPER_MODEL=whisper-large-v3
+# Provider-specific (only the active provider's keys matter)
+openai_base_url: http://localhost:8000
+openai_whisper_model: whisper-large-v3
+# openai_api_key: sk-...
+# groq_api_key: gsk_...
+# whisper_cpp_http_url: http://localhost:8080
+# whisper_model: large-v3          # MLX Whisper model
+# prompt: Claude, Anthropic, React  # domain-specific vocabulary
+```
 
-# Local HTTP server URL (default: http://localhost:8080)
-WHISPER_CPP_HTTP_URL=http://localhost:8080
+Legacy `.env` files (`~/.config/stt/.env`) are still supported. If both exist, `config.yml` takes precedence.
 
-# Required for cloud mode only
-GROQ_API_KEY=gsk_...
+### Providers
 
-# Audio device (saved automatically after first selection; device name, not index)
-AUDIO_DEVICE=MacBook Pro Microphone
+| Provider | Config key | Notes |
+|----------|-----------|-------|
+| `mlx` | `whisper_model` | macOS default, Apple Silicon, offline |
+| `parakeet` | `parakeet_model` | macOS, English only, very fast |
+| `openai` | `openai_base_url` | Linux default, any OpenAI-compatible server |
+| `whisper-cpp-http` | `whisper_cpp_http_url` | Local whisper.cpp server |
+| `groq` | `groq_api_key` | Cloud, requires [API key](https://console.groq.com) |
 
-# Language code for transcription
-LANGUAGE=en
+### Profiles
 
-# Trigger key: cmd_r, cmd_l, alt_r, alt_l, ctrl_r, ctrl_l, shift_r
-HOTKEY=cmd_r
+Profiles let you define named provider configurations with automatic fallback. If a remote server is unreachable, STT falls back to the next provider in the chain:
 
-# Context prompt to improve accuracy for specific terms
-PROMPT=Claude, Anthropic, TypeScript, React, Python
+```yaml
+active_profile: auto
 
-# Disable audio feedback sounds
-SOUND_ENABLED=true
+profiles:
+  qwen:
+    provider: openai
+    openai_base_url: http://gpu-server:8200
+    openai_whisper_model: Qwen/Qwen3-ASR-1.7B
+  whisper:
+    provider: openai
+    openai_base_url: http://gpu-server:8201
+    openai_whisper_model: openai/whisper-large-v3
+  local:
+    provider: mlx
+    whisper_model: large-v3-turbo
+  auto:
+    fallback:
+      - qwen:
+          connect_timeout: 2
+      - local
+```
+
+**Benchmark mode** runs additional providers in parallel and logs timing + text for comparison, while still returning results from the primary:
+
+```yaml
+active_profile: bench
+
+profiles:
+  # ... qwen, whisper, local as above ...
+  bench:
+    fallback:
+      - qwen:
+          connect_timeout: 2
+      - local
+    benchmark:
+      - whisper
+```
+
+### Prompt examples
+
+The `prompt` setting helps Whisper recognize domain-specific terms. Parakeet uses it for phonetic post-correction.
+
+```yaml
+# Programming
+prompt: Claude, Anthropic, TypeScript, React, useState, API endpoint
+
+# AI tools
+prompt: Claude Code, WezTerm, Groq, LLM
 ```
 
 ## Prompt Overlay (Optional)
 
 STT includes a prompt overlay (triggered by Right Option by default) for quickly pasting common prompts.
 
-Prompts live in:
-
-`~/.config/stt/prompts/*.md`
-
-### Local Mode (MLX Whisper) — Default
-
-Local transcription uses Apple Silicon GPU acceleration via MLX. On first run, the Whisper large-v3 model (~3GB) will be downloaded and cached. Subsequent runs load from cache.
-
-Runs completely offline — no API key required. Supports 99 languages and context prompts.
-
-### Local Mode (Parakeet)
-
-Nvidia's Parakeet model via MLX. Faster than Whisper (~3000x realtime factor) with comparable accuracy.
-
-```bash
-PROVIDER=parakeet
-```
-
-On first run, the model (~2.5GB) will be downloaded and cached.
-
-**Limitations:**
-- English only
-
-**Phonetic correction:** While Parakeet doesn't support Whisper-style prompts, it uses the `PROMPT` setting for phonetic post-processing. Terms like `Claude Code, WezTerm` will correct sound-alike ASR errors (e.g., "cloud code" → "Claude Code", "Vez term" → "WezTerm").
-
-### Cloud Mode (Groq)
-
-To use cloud transcription instead:
-
-```bash
-PROVIDER=groq
-GROQ_API_KEY=gsk_...
-```
-
-Requires a [Groq API key](https://console.groq.com) (free tier available).
-
-### HTTP Mode (Local Server)
-
-Run a local HTTP server with Whisper transcription. Useful for performance or custom integration.
-
-```bash
-PROVIDER=whisper-cpp-http
-WHISPER_CPP_HTTP_URL=http://localhost:8080
-```
-
-**Start the server:**
-
-```bash
-# Terminal 1: Start the whisper.cpp server
-./whisper-server -m models/ggml-large-v3.bin -f
-
-# Or run in background with a custom port
-./whisper-server -m models/ggml-large-v3.bin -f -t 4 -ngl 32 -p 8080
-```
-
-The server provides a whisper.cpp-compatible endpoint:
-
-```bash
-curl -X POST http://localhost:8080/inference \
-  -H "Content-Type: multipart/form-data" \
-  -F "file=@audio.wav" \
-  -F "language=en"
-```
-
-**Benefits:**
-- Fast HTTP API for integrating with other services
-- Reuse whisper.cpp model across multiple applications
-- Hardware accelerated on CPU/NVIDIA
-- Configurable temperature, model, and decoding options
-
-### OpenAI-compatible Mode
-
-Works with any server that implements the OpenAI `/v1/audio/transcriptions` API (e.g., faster-whisper-server, whisper.cpp with OpenAI compat, LocalAI).
-
-```bash
-PROVIDER=openai
-OPENAI_BASE_URL=http://localhost:8000
-OPENAI_WHISPER_MODEL=whisper-large-v3
-# OPENAI_API_KEY=sk-...  # optional, if your server requires auth
-```
-
-This is the default provider on Linux.
-
-### Prompt Examples
-
-The `PROMPT` setting helps Whisper recognize domain-specific terms:
-
-```bash
-# Programming
-PROMPT=TypeScript, React, useState, async await, API endpoint
-
-# AI tools
-PROMPT=Claude, Anthropic, OpenAI, Groq, LLM, GPT
-```
+Prompts live in `~/.config/stt/prompts/*.md`.
 
 ## Development
 

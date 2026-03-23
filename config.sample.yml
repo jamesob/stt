@@ -1,0 +1,88 @@
+# STT configuration
+# Copy to ~/.config/stt/config.yml, or run `stt` and the setup wizard
+# will create one for you.
+#
+# Docs: https://github.com/bokan/stt
+
+# -- General ----------------------------------------------------------
+
+# Trigger key: cmd_r, cmd_l, alt_r, alt_l, ctrl_r, ctrl_l, shift_r
+hotkey: cmd_r
+
+# Language code for transcription
+language: en
+
+# Audio device name (omit for system default)
+# audio_device: MacBook Pro Microphone
+
+# Context prompt -- improves accuracy for domain-specific terms.
+# Also used for phonetic correction with the Parakeet provider.
+# prompt: Claude, Anthropic, TypeScript, React
+
+# Audio feedback sounds
+sound_enabled: true
+
+# Save recordings to ~/.config/stt/recordings/
+keep_recordings: false
+
+# -- Provider ----------------------------------------------------------
+# Available: mlx, openai, whisper-cpp-http, groq, parakeet
+#
+# When active_profile is set the flat provider settings below are
+# ignored and the named profile is used instead.
+
+provider: openai
+
+# MLX Whisper (macOS, local)
+# whisper_model: large-v3
+
+# Parakeet (macOS, local, English only)
+# parakeet_model: mlx-community/parakeet-tdt-0.6b-v3
+
+# OpenAI-compatible server (default on Linux)
+openai_base_url: http://localhost:8000
+# openai_api_key: sk-...
+openai_whisper_model: whisper-large-v3
+
+# Whisper.cpp HTTP server
+# whisper_cpp_http_url: http://localhost:8080
+
+# Groq Cloud
+# groq_api_key: gsk_...
+
+# -- Profiles (optional) ----------------------------------------------
+# Named provider configs with automatic fallback.
+# Set active_profile to use one; the flat provider settings above are
+# then ignored.
+#
+# active_profile: auto
+#
+# profiles:
+#   qwen:
+#     provider: openai
+#     openai_base_url: http://stt.j.co:8200
+#     openai_whisper_model: Qwen/Qwen3-ASR-1.7B
+#   whisper:
+#     provider: openai
+#     openai_base_url: http://stt.j.co:8201
+#     openai_whisper_model: openai/whisper-large-v3
+#   local:
+#     provider: mlx
+#     whisper_model: large-v3-turbo
+#   auto:
+#     fallback:
+#       - qwen:
+#           connect_timeout: 2
+#       - local
+#
+# -- Benchmark mode (optional) ------------------------------------------
+# Uses the primary provider for results but runs all listed profiles
+# in parallel and logs timing + text for comparison.
+#
+#   bench:
+#     fallback:
+#       - qwen:
+#           connect_timeout: 2
+#       - local
+#     benchmark:
+#       - whisper

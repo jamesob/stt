@@ -1,0 +1,33 @@
+# STT benchmark configuration
+# Runs all three backends in parallel, using whisper as the primary
+# (whisper results are returned; qwen and local run for comparison).
+#
+# Copy to ~/.config/stt/config.yml or use as-is in the project root.
+
+hotkey: cmd_r
+language: en
+sound_enabled: true
+keep_recordings: false
+
+active_profile: bench
+
+profiles:
+  qwen:
+    provider: openai
+    openai_base_url: http://stt.j.co:8200
+    openai_whisper_model: Qwen/Qwen3-ASR-1.7B
+  whisper:
+    provider: openai
+    openai_base_url: http://stt.j.co:8201
+    openai_whisper_model: openai/whisper-large-v3
+  local:
+    provider: mlx
+    whisper_model: large-v3-turbo
+  bench:
+    fallback:
+      - whisper:
+          connect_timeout: 2
+      - local
+    benchmark:
+      - qwen
+      - local

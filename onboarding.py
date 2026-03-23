@@ -113,6 +113,43 @@ _PROVIDERS_LINUX = [
 PROVIDERS = _PROVIDERS_LINUX if IS_LINUX else _PROVIDERS_MACOS
 
 
+def test_remote_endpoint(
+    base_url: str, timeout: float = 3.0,
+) -> bool:
+    """TCP probe to test remote endpoint reachability."""
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or (
+        443 if parsed.scheme == "https" else 80
+    )
+    try:
+        sock = socket.create_connection(
+            (host, port), timeout=timeout,
+        )
+        sock.close()
+        return True
+    except (socket.timeout, OSError):
+        return False
+
+
+def test_groq_key(api_key: str) -> bool:
+    """Validate a Groq API key with a lightweight request."""
+    try:
+        import requests
+
+        resp = requests.get(
+            "https://api.groq.com/openai/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=5,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
 def welcome_banner(reconfigure: bool = False) -> None:
     """Show welcome panel."""
     console.print()
@@ -542,17 +579,64 @@ def run_setup(save_config_fn, current_config: dict = None, reconfigure: bool = F
 
     elif provider == "groq":
         api_key = get_groq_api_key(current=current.get("groq_api_key"))
+        console.print("[dim]Validating API key...[/dim]", end="")
+        if test_groq_key(api_key):
+            console.print(" [green]valid[/green]\n")
+        else:
+            console.print(" [yellow]could not validate[/yellow]")
+            console.print(
+                "[dim]Key will be saved anyway -- check it"
+                " if transcription fails.[/dim]\n"
+            )
         save_config_fn("GROQ_API_KEY", api_key)
 
     elif provider == "parakeet":
-        console.print("[dim]Parakeet uses a fixed model (English only).[/dim]\n")
+        console.print(
+            "[dim]Parakeet uses a fixed model"
+            " (English only).[/dim]\n"
+        )
+
+    elif provider == "whisper-cpp-http":
+        console.print("[bold]Whisper.cpp HTTP server[/bold]\n")
+        while True:
+            url = Prompt.ask(
+                "Server URL",
+                default=current.get(
+                    "whisper_cpp_http_url",
+                    "http://localhost:8080",
+                ),
+            )
+            console.print(
+                f"  [dim]Testing {url}...[/dim]", end=""
+            )
+            if test_remote_endpoint(url):
+                console.print(" [green]connected[/green]")
+                break
+            console.print(" [yellow]unreachable[/yellow]")
+            if Confirm.ask("Continue anyway?", default=True):
+                break
+        save_config_fn("WHISPER_CPP_HTTP_URL", url)
+        console.print()
 
     elif provider == "openai":
         console.print("[bold]OpenAI-compatible server[/bold]\n")
-        base_url = Prompt.ask(
-            "Base URL",
-            default=current.get("openai_base_url", "http://localhost:8000"),
-        )
+        while True:
+            base_url = Prompt.ask(
+                "Base URL",
+                default=current.get(
+                    "openai_base_url",
+                    "http://localhost:8000",
+                ),
+            )
+            console.print(
+                f"  [dim]Testing {base_url}...[/dim]", end=""
+            )
+            if test_remote_endpoint(base_url):
+                console.print(" [green]connected[/green]")
+                break
+            console.print(" [yellow]unreachable[/yellow]")
+            if Confirm.ask("Continue anyway?", default=True):
+                break
         save_config_fn("OPENAI_BASE_URL", base_url)
         api_key = Prompt.ask(
             "API key (optional, press Enter to skip)",
@@ -563,7 +647,9 @@ def run_setup(save_config_fn, current_config: dict = None, reconfigure: bool = F
             save_config_fn("OPENAI_API_KEY", api_key)
         model_name = Prompt.ask(
             "Model name",
-            default=current.get("openai_whisper_model", "whisper-large-v3"),
+            default=current.get(
+                "openai_whisper_model", "whisper-large-v3"
+            ),
         )
         save_config_fn("OPENAI_WHISPER_MODEL", model_name)
         console.print()

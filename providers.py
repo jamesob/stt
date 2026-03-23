@@ -7,13 +7,48 @@ import json
 import os
 import queue
 import select
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
 from abc import ABC, abstractmethod
 from typing import Any
+
+
+def _wav_to_opus(wav_path: str) -> str | None:
+    """Compress WAV to OGG Opus for faster network transfer.
+
+    Returns path to a temp .ogg file, or None if ffmpeg is missing.
+    Caller is responsible for deleting the temp file.
+    """
+    if not shutil.which("ffmpeg"):
+        return None
+    fd, ogg_path = tempfile.mkstemp(suffix=".ogg")
+    os.close(fd)
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", wav_path,
+                "-c:a", "libopus", "-b:a", "24k",
+                "-application", "voip",
+                "-vn", ogg_path,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+        if os.path.getsize(ogg_path) > 0:
+            return ogg_path
+    except Exception:
+        pass
+    try:
+        os.unlink(ogg_path)
+    except OSError:
+        pass
+    return None
 
 
 class TranscriptionProvider(ABC):
@@ -63,27 +98,41 @@ class GroqProvider(TranscriptionProvider):
             "Authorization": f"Bearer {self.api_key}"
         }
 
-        with open(audio_file_path, "rb") as audio_file:
-            files = {
-                "file": ("audio.wav", audio_file, "audio/wav")
-            }
-            data = {
-                "model": "whisper-large-v3",
-                "response_format": "text",
-                "language": language,
-            }
-            if prompt:
-                data["prompt"] = prompt
+        ogg_path = _wav_to_opus(audio_file_path)
+        send_path = ogg_path or audio_file_path
+        fname = "audio.ogg" if ogg_path else "audio.wav"
+        mime = "audio/ogg" if ogg_path else "audio/wav"
 
-            try:
-                response = requests.post(url, headers=headers, files=files, data=data, timeout=(5, 20))
+        try:
+            with open(send_path, "rb") as audio_file:
+                files = {
+                    "file": (fname, audio_file, mime)
+                }
+                data = {
+                    "model": "whisper-large-v3",
+                    "response_format": "text",
+                    "language": language,
+                }
+                if prompt:
+                    data["prompt"] = prompt
+
+                response = requests.post(
+                    url, headers=headers, files=files,
+                    data=data, timeout=(5, 20),
+                )
                 response.raise_for_status()
                 return response.text.strip()
-            except requests.exceptions.RequestException as e:
-                print(f"❌ API Error: {e}")
-                if hasattr(e, 'response') and e.response is not None:
-                    print(f"Response: {e.response.text}")
-                return None
+        except requests.exceptions.RequestException as e:
+            print(f"API Error: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response: {e.response.text}")
+            return None
+        finally:
+            if ogg_path:
+                try:
+                    os.unlink(ogg_path)
+                except OSError:
+                    pass
 
 
 class WhisperCPPHTTPProvider(TranscriptionProvider):
@@ -163,19 +212,24 @@ class OpenAICompatibleProvider(TranscriptionProvider):
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        with open(audio_file_path, "rb") as audio_file:
-            files = {
-                "file": ("audio.wav", audio_file, "audio/wav"),
-            }
-            data: dict[str, str] = {
-                "model": self.model,
-                "response_format": "text",
-                "language": language,
-            }
-            if prompt:
-                data["prompt"] = prompt
+        ogg_path = _wav_to_opus(audio_file_path)
+        send_path = ogg_path or audio_file_path
+        fname = "audio.ogg" if ogg_path else "audio.wav"
+        mime = "audio/ogg" if ogg_path else "audio/wav"
 
-            try:
+        try:
+            with open(send_path, "rb") as audio_file:
+                files = {
+                    "file": (fname, audio_file, mime),
+                }
+                data: dict[str, str] = {
+                    "model": self.model,
+                    "response_format": "text",
+                    "language": language,
+                }
+                if prompt:
+                    data["prompt"] = prompt
+
                 response = requests.post(
                     url,
                     headers=headers,
@@ -184,15 +238,28 @@ class OpenAICompatibleProvider(TranscriptionProvider):
                     timeout=(5, 30),
                 )
                 response.raise_for_status()
-                return response.text.strip()
-            except requests.exceptions.RequestException as e:
-                print(f"API Error: {e}")
-                if hasattr(e, "response") and e.response is not None:
+                text = response.text.strip()
+                # vLLM returns JSON even with response_format=text
+                if text.startswith("{"):
                     try:
-                        print(f"Response: {e.response.text}")
-                    except Exception:
+                        text = json.loads(text)["text"]
+                    except (json.JSONDecodeError, KeyError):
                         pass
-                return None
+                return text.strip() if text else None
+        except requests.exceptions.RequestException as e:
+            print(f"API Error: {e}")
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    print(f"Response: {e.response.text}")
+                except Exception:
+                    pass
+            return None
+        finally:
+            if ogg_path:
+                try:
+                    os.unlink(ogg_path)
+                except OSError:
+                    pass
 
 
 class _MLXWorkerClient:
@@ -833,6 +900,205 @@ class ParakeetProvider(TranscriptionProvider):
 
     def _shutdown(self) -> None:
         self._stop_worker(force=True)
+
+
+class FallbackProvider(TranscriptionProvider):
+    """Try providers in order; fall back on connection failure."""
+
+    def __init__(
+        self,
+        chain: list[tuple[TranscriptionProvider, float]],
+    ):
+        # chain: [(provider, connect_timeout_seconds), ...]
+        self._chain = chain
+        self._warmed: set[int] = set()
+
+    @property
+    def name(self) -> str:
+        names = [p.name for p, _ in self._chain]
+        return " -> ".join(names)
+
+    def is_available(self) -> bool:
+        return any(p.is_available() for p, _ in self._chain)
+
+    def warmup(self) -> None:
+        # Only warm the primary provider. Fallback providers
+        # warm lazily on first use to avoid wasting memory.
+        for i, (prov, timeout) in enumerate(self._chain):
+            if timeout and hasattr(prov, "base_url"):
+                if not self._probe(prov.base_url, timeout):
+                    continue
+            if prov.is_available():
+                prov.warmup()
+                self._warmed.add(i)
+                return
+
+    def transcribe(
+        self,
+        audio_file_path: str,
+        language: str,
+        prompt: str = None,
+    ) -> str | None:
+        for i, (prov, timeout) in enumerate(self._chain):
+            if not prov.is_available():
+                continue
+
+            # TCP probe for remote providers
+            if timeout and hasattr(prov, "base_url"):
+                if not self._probe(prov.base_url, timeout):
+                    self._log_skip(i, "unreachable")
+                    continue
+
+            # Lazy warmup
+            if i not in self._warmed:
+                try:
+                    prov.warmup()
+                    self._warmed.add(i)
+                except Exception as e:
+                    self._log_skip(
+                        i, f"warmup failed: {e}")
+                    continue
+
+            result = prov.transcribe(
+                audio_file_path, language, prompt)
+            if result is not None:
+                return result
+
+        return None
+
+    def cancel(self) -> None:
+        for prov, _ in self._chain:
+            c = getattr(prov, "cancel", None)
+            if callable(c):
+                try:
+                    c()
+                except Exception:
+                    pass
+
+    def _log_skip(self, idx: int, reason: str):
+        name = self._chain[idx][0].name
+        print(f"{name}: {reason}")
+        if idx < len(self._chain) - 1:
+            nxt = self._chain[idx + 1][0].name
+            print(f"Falling back to {nxt}...")
+
+    @staticmethod
+    def _probe(base_url: str, timeout: float) -> bool:
+        """TCP connect probe to check server reachability."""
+        import socket
+        from urllib.parse import urlparse
+
+        parsed = urlparse(base_url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or (
+            443 if parsed.scheme == "https" else 80
+        )
+        try:
+            sock = socket.create_connection(
+                (host, port), timeout=timeout)
+            sock.close()
+            return True
+        except (socket.timeout, OSError):
+            return False
+
+
+class BenchmarkProvider(TranscriptionProvider):
+    """Wraps a primary provider; runs all others in parallel and logs results."""
+
+    def __init__(
+        self,
+        primary: TranscriptionProvider,
+        others: list[TranscriptionProvider],
+    ):
+        self._primary = primary
+        self._others = others
+
+    @property
+    def name(self) -> str:
+        return f"{self._primary.name} [benchmark]"
+
+    def is_available(self) -> bool:
+        return self._primary.is_available()
+
+    def warmup(self) -> None:
+        self._primary.warmup()
+        # Warm others in background threads so we don't block startup
+        for prov in self._others:
+            threading.Thread(
+                target=self._safe_warmup, args=(prov,),
+                daemon=True,
+            ).start()
+
+    def transcribe(
+        self, audio_file_path: str, language: str,
+        prompt: str = None,
+    ) -> str | None:
+        results: dict[str, tuple[str | None, float]] = {}
+        lock = threading.Lock()
+
+        def _run(prov: TranscriptionProvider):
+            t0 = time.monotonic()
+            try:
+                text = prov.transcribe(
+                    audio_file_path, language, prompt)
+            except Exception as e:
+                text = f"[error: {e}]"
+            elapsed = time.monotonic() - t0
+            with lock:
+                results[prov.name] = (text, elapsed)
+            self._log_result(prov.name, text, elapsed)
+
+        # Launch others in background
+        threads = []
+        for prov in self._others:
+            if prov.is_available():
+                t = threading.Thread(
+                    target=_run, args=(prov,), daemon=True)
+                t.start()
+                threads.append(t)
+
+        # Run primary in foreground
+        t0 = time.monotonic()
+        result = self._primary.transcribe(
+            audio_file_path, language, prompt)
+        elapsed = time.monotonic() - t0
+        self._log_result(
+            self._primary.name, result, elapsed,
+            primary=True,
+        )
+
+        return result
+
+    def cancel(self) -> None:
+        c = getattr(self._primary, "cancel", None)
+        if callable(c):
+            c()
+        for prov in self._others:
+            c = getattr(prov, "cancel", None)
+            if callable(c):
+                try:
+                    c()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _safe_warmup(prov: TranscriptionProvider):
+        try:
+            prov.warmup()
+        except Exception as e:
+            print(f"[benchmark] {prov.name} warmup failed: {e}")
+
+    @staticmethod
+    def _log_result(
+        name: str, text: str | None, elapsed: float,
+        primary: bool = False,
+    ):
+        tag = ">>>" if primary else "   "
+        sec = f"{elapsed:.2f}s"
+        preview = (text or "").strip()
+        if len(preview) > 120:
+            preview = preview[:117] + "..."
+        print(f"[benchmark] [{sec}] {tag} {name}: {preview}")
 
 
 def get_provider(provider_name: str = None) -> TranscriptionProvider:

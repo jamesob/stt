@@ -201,6 +201,10 @@ def main() -> None:
             "groq_api_key": cfg.groq_api_key,
             "hotkey": cfg.hotkey,
             "audio_device": cfg.audio_device,
+            "openai_base_url": cfg.openai_base_url,
+            "openai_api_key": cfg.openai_api_key,
+            "openai_whisper_model": cfg.openai_whisper_model,
+            "whisper_cpp_http_url": cfg.whisper_cpp_http_url,
         }
         run_setup(save, current_config=current_config, reconfigure=True)
         return
@@ -272,6 +276,18 @@ def main() -> None:
     threading.Thread(target=check_for_updates, daemon=True).start()
 
     # Initialize provider (may be slow due to imports).
+    # Profile-based provider resolution (optional).
+    _profiles_data = None
+    if cfg.stt_profile:
+        try:
+            from profiles import (
+                load_profiles,
+                get_active_profile,
+            )
+            _profiles_data = load_profiles()
+        except ImportError:
+            pass
+
     provider = None
     init_error = None
     provider_available = False
@@ -289,9 +305,32 @@ def main() -> None:
     )
     slow_timer.start()
     try:
-        os.environ["PROVIDER"] = cfg.provider
-        provider = get_provider(cfg.provider)
-        provider_available = provider.is_available()
+        if cfg.stt_profile and _profiles_data:
+            from profiles import (
+                get_active_profile,
+                provider_from_profile,
+            )
+            pconf = get_active_profile(
+                _profiles_data, cfg.stt_profile)
+            if pconf:
+                provider = provider_from_profile(
+                    pconf,
+                    _profiles_data.get("profiles", {}),
+                )
+                provider_available = provider.is_available()
+            else:
+                init_error = ValueError(
+                    f"Profile '{cfg.stt_profile}' not found"
+                )
+        elif cfg.stt_profile and not _profiles_data:
+            init_error = ValueError(
+                f"STT_PROFILE={cfg.stt_profile} but no "
+                "profiles.yml found"
+            )
+        else:
+            os.environ["PROVIDER"] = cfg.provider
+            provider = get_provider(cfg.provider)
+            provider_available = provider.is_available()
     except ValueError as e:
         init_error = e
     finally:
@@ -316,6 +355,10 @@ def main() -> None:
                 "groq_api_key": cfg.groq_api_key,
                 "hotkey": cfg.hotkey,
                 "audio_device": cfg.audio_device,
+                "openai_base_url": cfg.openai_base_url,
+                "openai_api_key": cfg.openai_api_key,
+                "openai_whisper_model": cfg.openai_whisper_model,
+                "whisper_cpp_http_url": cfg.whisper_cpp_http_url,
             }
             run_setup(
                 save, current_config=current_config, reconfigure=True
@@ -499,7 +542,7 @@ def main() -> None:
 
     # Config change handler.
     def on_config_change(new_cfg: Config, changes: dict):
-        nonlocal cfg, provider, hotkey_name
+        nonlocal cfg, provider, hotkey_name, _profiles_data
         cfg = new_cfg
 
         if "AUDIO_DEVICE" in changes:
@@ -535,23 +578,54 @@ def main() -> None:
             "PROVIDER", "WHISPER_MODEL", "GROQ_API_KEY",
             "WHISPER_CPP_HTTP_URL", "PARAKEET_MODEL",
             "OPENAI_BASE_URL", "OPENAI_API_KEY",
-            "OPENAI_WHISPER_MODEL",
+            "OPENAI_WHISPER_MODEL", "STT_PROFILE",
         }
         if provider_keys & set(changes):
             try:
-                provider = get_provider(cfg.provider)
+                if cfg.stt_profile:
+                    from profiles import (
+                        load_profiles,
+                        get_active_profile,
+                        provider_from_profile,
+                    )
+                    _profiles_data = load_profiles()
+                    pconf = get_active_profile(
+                        _profiles_data or {},
+                        cfg.stt_profile,
+                    )
+                    if pconf:
+                        provider = provider_from_profile(
+                            pconf,
+                            (_profiles_data or {}).get(
+                                "profiles", {}),
+                        )
+                    else:
+                        print(
+                            f"   Profile "
+                            f"'{cfg.stt_profile}' "
+                            "not found"
+                        )
+                        return
+                else:
+                    provider = get_provider(cfg.provider)
+
                 if provider.is_available():
                     provider.warmup()
                     app.provider = provider
                     if menubar:
-                        menubar.update_provider_name(provider.name)
+                        menubar.update_provider_name(
+                            provider.name)
                     print(f"   Provider: {provider.name}")
                 else:
                     print(
-                        f"   Provider '{cfg.provider}' not available"
+                        f"   Provider '{provider.name}' "
+                        "not available"
                     )
             except Exception as e:
-                print(f"   Failed to reinitialize provider: {e}")
+                print(
+                    f"   Failed to reinitialize "
+                    f"provider: {e}"
+                )
 
     config_watcher = ConfigWatcher(on_config_change)
     config_watcher.start()

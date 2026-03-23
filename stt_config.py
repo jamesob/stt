@@ -15,6 +15,7 @@ from stt_defaults import IS_LINUX
 
 CONFIG_DIR = os.path.expanduser("~/.config/stt")
 CONFIG_FILE = os.path.join(CONFIG_DIR, ".env")
+CONFIG_YAML = os.path.join(CONFIG_DIR, "config.yml")
 INITIALIZED_MARKER = os.path.join(CONFIG_DIR, ".initialized")
 LOCK_FILE = os.path.join(tempfile.gettempdir(), "stt.lock")
 
@@ -23,6 +24,87 @@ _MANAGED_ENV_KEYS: set[str] = set()
 
 
 _DEFAULT_PROVIDER = "openai" if IS_LINUX else "mlx"
+
+# Mapping between YAML key names and ENV var names.
+_YAML_TO_ENV = {
+    "provider": "PROVIDER",
+    "groq_api_key": "GROQ_API_KEY",
+    "whisper_model": "WHISPER_MODEL",
+    "parakeet_model": "PARAKEET_MODEL",
+    "whisper_cpp_http_url": "WHISPER_CPP_HTTP_URL",
+    "openai_base_url": "OPENAI_BASE_URL",
+    "openai_api_key": "OPENAI_API_KEY",
+    "openai_whisper_model": "OPENAI_WHISPER_MODEL",
+    "audio_device": "AUDIO_DEVICE",
+    "language": "LANGUAGE",
+    "hotkey": "HOTKEY",
+    "prompt": "PROMPT",
+    "active_profile": "STT_PROFILE",
+    "sound_enabled": "SOUND_ENABLED",
+    "keep_recordings": "KEEP_RECORDINGS",
+}
+_ENV_TO_YAML = {v: k for k, v in _YAML_TO_ENV.items()}
+
+# Canonical key order for YAML output.
+_YAML_KEY_ORDER = [
+    "provider", "language", "hotkey", "audio_device",
+    "prompt", "sound_enabled", "keep_recordings",
+    "groq_api_key", "whisper_model", "parakeet_model",
+    "openai_base_url", "openai_api_key",
+    "openai_whisper_model", "whisper_cpp_http_url",
+    "active_profile", "profiles",
+]
+
+
+def _read_yaml() -> dict:
+    """Read config.yml and return the raw dict."""
+    try:
+        import yaml
+
+        with open(CONFIG_YAML) as f:
+            data = yaml.safe_load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ordered_yaml_dict(data: dict) -> dict:
+    """Return data dict ordered by canonical key order."""
+    ordered: dict = {}
+    for k in _YAML_KEY_ORDER:
+        if k in data:
+            ordered[k] = data[k]
+    for k, v in data.items():
+        if k not in ordered:
+            ordered[k] = v
+    return ordered
+
+
+def _save_to_yaml(key: str, value: str) -> str:
+    """Save a single config value to config.yml.
+
+    Key can be ENV-style (PROVIDER) or YAML-style (provider).
+    """
+    import yaml
+
+    yaml_key = _ENV_TO_YAML.get(key, key.lower())
+
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    data = _read_yaml() if os.path.exists(CONFIG_YAML) else {}
+
+    if not value:
+        data.pop(yaml_key, None)
+    elif value.lower() in ("true", "false"):
+        data[yaml_key] = value.lower() == "true"
+    else:
+        data[yaml_key] = value
+
+    with open(CONFIG_YAML, "w") as f:
+        yaml.dump(
+            _ordered_yaml_dict(data), f,
+            default_flow_style=False, sort_keys=False,
+        )
+    return CONFIG_YAML
 
 
 @dataclass
@@ -39,6 +121,7 @@ class Config:
     language: str = "en"
     hotkey: str = "cmd_r"
     prompt: str = ""
+    stt_profile: str = ""
     sound_enabled: bool = True
     keep_recordings: bool = False
 
@@ -63,6 +146,7 @@ class Config:
             language=os.environ.get("LANGUAGE", "en"),
             hotkey=os.environ.get("HOTKEY", "cmd_r"),
             prompt=os.environ.get("PROMPT", ""),
+            stt_profile=os.environ.get("STT_PROFILE", ""),
             sound_enabled=os.environ.get(
                 "SOUND_ENABLED", "true"
             ).lower() == "true",
@@ -85,6 +169,7 @@ class Config:
             "LANGUAGE": self.language,
             "HOTKEY": self.hotkey,
             "PROMPT": self.prompt,
+            "STT_PROFILE": self.stt_profile,
             "SOUND_ENABLED": str(self.sound_enabled).lower(),
             "KEEP_RECORDINGS": str(self.keep_recordings).lower(),
         }
@@ -107,9 +192,23 @@ def reload_env_files() -> None:
 
 
 def _read_env_files() -> dict[str, str]:
-    """Read env files without mutating the process environment."""
+    """Read config files without mutating the process environment.
+
+    Precedence: local .env > config.yml > global .env.
+    config.yml and global .env are mutually exclusive (YAML wins).
+    """
     data: dict[str, str] = {}
-    if os.path.exists(CONFIG_FILE):
+
+    if os.path.exists(CONFIG_YAML):
+        yaml_data = _read_yaml()
+        for yaml_key, env_key in _YAML_TO_ENV.items():
+            if yaml_key in yaml_data:
+                val = yaml_data[yaml_key]
+                if isinstance(val, bool):
+                    data[env_key] = str(val).lower()
+                elif val is not None:
+                    data[env_key] = str(val)
+    elif os.path.exists(CONFIG_FILE):
         for k, v in dotenv_values(CONFIG_FILE).items():
             if v is None:
                 continue
@@ -160,9 +259,16 @@ def mask_api_key(key: str) -> str:
 
 
 def save_config(key: str, value: str, *, force_global: bool = False) -> str:
-    """Save a config value to local .env (if present) or global ~/.config/stt/.env."""
+    """Save a config value.
+
+    Uses config.yml when it exists or when force_global is set.
+    Falls back to .env for legacy setups.
+    """
+    if force_global or os.path.exists(CONFIG_YAML):
+        return _save_to_yaml(key, value)
+
     local_env = os.path.join(os.getcwd(), ".env")
-    if not force_global and os.path.exists(local_env):
+    if os.path.exists(local_env):
         env_path = local_env
     else:
         os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -205,10 +311,13 @@ class ConfigWatcher:
         local_env = os.path.join(os.getcwd(), ".env")
         if os.path.exists(local_env):
             self._watched_files.add(local_env)
+        if os.path.exists(CONFIG_YAML):
+            self._watched_files.add(CONFIG_YAML)
+        elif os.path.exists(CONFIG_DIR):
+            self._watched_files.add(CONFIG_YAML)
         if os.path.exists(CONFIG_FILE):
             self._watched_files.add(CONFIG_FILE)
         elif os.path.exists(CONFIG_DIR):
-            # Watch the directory for file creation.
             self._watched_files.add(CONFIG_FILE)
 
         if not self._watched_files:
