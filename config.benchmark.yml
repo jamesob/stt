@@ -14,11 +14,11 @@ active_profile: bench
 profiles:
   qwen:
     provider: openai
-    openai_base_url: http://stt.j.co:8200
+    openai_base_url: http://gpu-server:8200
     openai_whisper_model: Qwen/Qwen3-ASR-1.7B
   whisper:
     provider: openai
-    openai_base_url: http://stt.j.co:8201
+    openai_base_url: http://gpu-server:8201
     openai_whisper_model: openai/whisper-large-v3
   local:
     provider: mlx

@@ -10,7 +10,7 @@ import re
 import shutil
 
 PROMPTS_DIR = Path.home() / ".config" / "stt" / "prompts"
-OLD_PROMPTS_DIR = Path.home() / "go" / "src" / "github.com" / "bokan" / "dotfiles" / "stt-prompts"
+OLD_PROMPTS_DIR = Path.home() / "go" / "src" / "github.com" / "jamesob" / "dotfiles" / "stt-prompts"
 
 DEFAULT_ICON = "•"
 

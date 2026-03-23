@@ -29,7 +29,7 @@ try:
 except Exception:
     __version__ = "0.0.0"
 
-RELEASES_URL = "https://api.github.com/repos/bokan/stt/releases/latest"
+RELEASES_URL = "https://api.github.com/repos/jamesob/stt/releases/latest"
 LOCK_FILE = os.path.join(tempfile.gettempdir(), "stt.lock")
 
 _lock_file: Optional[object] = None
@@ -84,7 +84,7 @@ def check_for_updates() -> None:
         if latest and parse_version(latest) > parse_version(__version__):
             print(f"\n📦 Update available: {__version__} → {latest}", flush=True)
             print(
-                "   Run: uv tool install --reinstall git+https://github.com/bokan/stt.git",
+                "   Run: uv tool install --reinstall git+https://github.com/jamesob/stt.git",
                 flush=True,
             )
     except Exception:
@@ -138,6 +138,9 @@ def _select_audio_device(*, saved_device_name: str, save_device_fn) -> str | Non
                 return saved_device_name
         print(f"⚠️  Saved device '{saved_device_name}' not found, please select again")
 
+    if len(input_devices) == 1:
+        return None  # auto-select the only device
+
     print("\nAvailable input devices:")
     for i, dev in input_devices:
         marker = "*" if i == sd.default.device[0] else " "
@@ -171,17 +174,21 @@ def main() -> None:
     import subprocess
     import time
 
-    from providers import get_provider
+    from profiles import load_active_provider
     from prompts_config import ensure_default_prompts
     from stt_config import (
-        CONFIG_FILE,
+        CONFIG_YAML,
         Config,
         ConfigWatcher,
+        _PROVIDER_YAML_KEYS,
+        _ENV_TO_YAML,
+        get_active_profile_dict,
         is_first_run,
         load_env_startup,
         reload_env_files,
         mark_initialized,
         save_config,
+        save_profile_key,
     )
 
     load_env_startup()
@@ -191,22 +198,38 @@ def main() -> None:
     if "--config" in sys.argv:
         from onboarding import run_setup
 
+        prof_name, prof_cfg = get_active_profile_dict()
+        target_profile = prof_name or "default"
+
         def save(key: str, value: str):
-            save_config(key, value, force_global=True)
+            yaml_key = _ENV_TO_YAML.get(key, key.lower())
+            if yaml_key in _PROVIDER_YAML_KEYS:
+                save_profile_key(target_profile, yaml_key, value)
+            else:
+                save_config(key, value, force_global=True)
             os.environ[str(key)] = str(value)
 
         current_config = {
-            "provider": cfg.provider,
-            "model": cfg.whisper_model,
-            "groq_api_key": cfg.groq_api_key,
+            "provider": prof_cfg.get("provider", ""),
+            "model": prof_cfg.get("whisper_model", ""),
+            "groq_api_key": prof_cfg.get("groq_api_key", ""),
             "hotkey": cfg.hotkey,
             "audio_device": cfg.audio_device,
-            "openai_base_url": cfg.openai_base_url,
-            "openai_api_key": cfg.openai_api_key,
-            "openai_whisper_model": cfg.openai_whisper_model,
-            "whisper_cpp_http_url": cfg.whisper_cpp_http_url,
+            "openai_base_url": prof_cfg.get(
+                "openai_base_url", ""),
+            "openai_api_key": prof_cfg.get(
+                "openai_api_key", ""),
+            "openai_whisper_model": prof_cfg.get(
+                "openai_whisper_model", ""),
+            "whisper_cpp_http_url": prof_cfg.get(
+                "whisper_cpp_http_url", ""),
         }
         run_setup(save, current_config=current_config, reconfigure=True)
+        # Ensure active_profile is set after wizard.
+        save_config(
+            "active_profile", target_profile,
+            force_global=True,
+        )
         return
 
     # Dev-only permission flow testing (macOS only).
@@ -256,10 +279,17 @@ def main() -> None:
         from onboarding import run_first_time_setup
 
         def save_and_update(key: str, value: str):
-            save_config(key, value, force_global=True)
+            yaml_key = _ENV_TO_YAML.get(key, key.lower())
+            if yaml_key in _PROVIDER_YAML_KEYS:
+                save_profile_key("default", yaml_key, value)
+            else:
+                save_config(key, value, force_global=True)
             os.environ[str(key)] = str(value)
 
         run_first_time_setup(save_and_update)
+        save_config(
+            "active_profile", "default", force_global=True,
+        )
         mark_initialized()
         reload_env_files()
         cfg = Config.from_env()
@@ -270,27 +300,14 @@ def main() -> None:
     console = Console()
     console.print()
     console.print("[bold]STT[/bold] [dim]Voice-to-text[/dim]")
-    console.print("[dim]https://github.com/bokan/stt[/dim]")
+    console.print("[dim]https://github.com/jamesob/stt[/dim]")
     console.print()
 
     threading.Thread(target=check_for_updates, daemon=True).start()
 
-    # Initialize provider (may be slow due to imports).
-    # Profile-based provider resolution (optional).
-    _profiles_data = None
-    if cfg.stt_profile:
-        try:
-            from profiles import (
-                load_profiles,
-                get_active_profile,
-            )
-            _profiles_data = load_profiles()
-        except ImportError:
-            pass
-
+    # Initialize provider via profiles.
     provider = None
     init_error = None
-    provider_available = False
 
     status = Status(
         "[dim]Initializing...[/dim]", console=console, spinner="dots"
@@ -305,32 +322,7 @@ def main() -> None:
     )
     slow_timer.start()
     try:
-        if cfg.stt_profile and _profiles_data:
-            from profiles import (
-                get_active_profile,
-                provider_from_profile,
-            )
-            pconf = get_active_profile(
-                _profiles_data, cfg.stt_profile)
-            if pconf:
-                provider = provider_from_profile(
-                    pconf,
-                    _profiles_data.get("profiles", {}),
-                )
-                provider_available = provider.is_available()
-            else:
-                init_error = ValueError(
-                    f"Profile '{cfg.stt_profile}' not found"
-                )
-        elif cfg.stt_profile and not _profiles_data:
-            init_error = ValueError(
-                f"STT_PROFILE={cfg.stt_profile} but no "
-                "profiles.yml found"
-            )
-        else:
-            os.environ["PROVIDER"] = cfg.provider
-            provider = get_provider(cfg.provider)
-            provider_available = provider.is_available()
+        provider = load_active_provider(cfg.active_profile)
     except ValueError as e:
         init_error = e
     finally:
@@ -341,38 +333,44 @@ def main() -> None:
         console.print(f"[red]x[/red] {init_error}")
         raise SystemExit(1)
 
-    if not provider_available:
-        if cfg.provider == "groq" and not cfg.groq_api_key:
+    if not provider.is_available():
+        # Check if this is a groq profile missing an API key.
+        _, prof_cfg = get_active_profile_dict()
+        prov_name = prof_cfg.get("provider", "")
+        if prov_name == "groq" and not prof_cfg.get("groq_api_key"):
             from onboarding import run_setup
 
+            target = cfg.active_profile or "default"
+
             def save(key: str, value: str):
-                save_config(key, value, force_global=True)
+                yaml_key = _ENV_TO_YAML.get(key, key.lower())
+                if yaml_key in _PROVIDER_YAML_KEYS:
+                    save_profile_key(target, yaml_key, value)
+                else:
+                    save_config(
+                        key, value, force_global=True)
                 os.environ[str(key)] = str(value)
 
-            current_config = {
-                "provider": cfg.provider,
-                "model": cfg.whisper_model,
-                "groq_api_key": cfg.groq_api_key,
-                "hotkey": cfg.hotkey,
-                "audio_device": cfg.audio_device,
-                "openai_base_url": cfg.openai_base_url,
-                "openai_api_key": cfg.openai_api_key,
-                "openai_whisper_model": cfg.openai_whisper_model,
-                "whisper_cpp_http_url": cfg.whisper_cpp_http_url,
-            }
             run_setup(
-                save, current_config=current_config, reconfigure=True
+                save, current_config={
+                    "provider": prov_name,
+                    "groq_api_key": "",
+                    "hotkey": cfg.hotkey,
+                    "audio_device": cfg.audio_device,
+                }, reconfigure=True,
             )
             reload_env_files()
             cfg = Config.from_env()
-            provider = get_provider(cfg.provider)
+            provider = load_active_provider(cfg.active_profile)
         else:
             console.print(
-                f"[red]x[/red] Provider '{cfg.provider}' is not available"
+                f"[red]x[/red] Provider not available: "
+                f"{provider.name}"
             )
-            if cfg.provider == "mlx":
+            if prov_name == "mlx":
                 console.print(
-                    "  [dim]Install with: pip install mlx-whisper[/dim]"
+                    "  [dim]Install with: "
+                    "pip install mlx-whisper[/dim]"
                 )
             raise SystemExit(1)
 
@@ -502,6 +500,11 @@ def main() -> None:
         keep_recordings=cfg.keep_recordings,
     )
 
+    # Wait for benchmark providers to finish warming up.
+    wait_ready = getattr(provider, "wait_ready", None)
+    if callable(wait_ready):
+        wait_ready()
+
     hotkey_name = get_hotkey_display_name(cfg.hotkey)
     console.print(
         f"[bold green]Ready[/bold green] [dim]|[/dim] "
@@ -518,6 +521,13 @@ def main() -> None:
         if config_watcher:
             config_watcher.stop()
         controller.stop()
+        # Shut down provider workers (MLX subprocess, etc.)
+        cancel = getattr(provider, "cancel", None)
+        if callable(cancel):
+            try:
+                cancel()
+            except Exception:
+                pass
 
     atexit.register(cleanup)
 
@@ -535,14 +545,14 @@ def main() -> None:
             hotkey_name=hotkey_name,
             provider_name=provider.name,
             sound_enabled=cfg.sound_enabled,
-            config_file=CONFIG_FILE,
+            config_file=CONFIG_YAML,
             on_sound_toggle=on_sound_toggle,
             on_quit=cleanup,
         )
 
     # Config change handler.
     def on_config_change(new_cfg: Config, changes: dict):
-        nonlocal cfg, provider, hotkey_name, _profiles_data
+        nonlocal cfg, provider, hotkey_name
         cfg = new_cfg
 
         if "AUDIO_DEVICE" in changes:
@@ -574,41 +584,11 @@ def main() -> None:
                 f"{'enabled' if cfg.sound_enabled else 'disabled'}"
             )
 
-        provider_keys = {
-            "PROVIDER", "WHISPER_MODEL", "GROQ_API_KEY",
-            "WHISPER_CPP_HTTP_URL", "PARAKEET_MODEL",
-            "OPENAI_BASE_URL", "OPENAI_API_KEY",
-            "OPENAI_WHISPER_MODEL", "STT_PROFILE",
-        }
-        if provider_keys & set(changes):
+        # Profile or provider config changed.
+        if "STT_PROFILE" in changes or "_PROFILES_CHANGED" in changes:
             try:
-                if cfg.stt_profile:
-                    from profiles import (
-                        load_profiles,
-                        get_active_profile,
-                        provider_from_profile,
-                    )
-                    _profiles_data = load_profiles()
-                    pconf = get_active_profile(
-                        _profiles_data or {},
-                        cfg.stt_profile,
-                    )
-                    if pconf:
-                        provider = provider_from_profile(
-                            pconf,
-                            (_profiles_data or {}).get(
-                                "profiles", {}),
-                        )
-                    else:
-                        print(
-                            f"   Profile "
-                            f"'{cfg.stt_profile}' "
-                            "not found"
-                        )
-                        return
-                else:
-                    provider = get_provider(cfg.provider)
-
+                provider = load_active_provider(
+                    cfg.active_profile)
                 if provider.is_available():
                     provider.warmup()
                     app.provider = provider
@@ -632,30 +612,23 @@ def main() -> None:
 
     controller.start()
 
-    if menubar:
-        menubar.run()
-    elif IS_LINUX:
-        # On Linux: use GLib main loop if GTK overlay is active,
-        # otherwise block on an event.
-        try:
-            from gi.repository import GLib
-            loop = GLib.MainLoop()
+    try:
+        if menubar:
+            menubar.run()
+        elif IS_LINUX:
             try:
+                from gi.repository import GLib
+                loop = GLib.MainLoop()
                 loop.run()
-            except KeyboardInterrupt:
-                loop.quit()
-        except ImportError:
-            stop = threading.Event()
-            try:
-                stop.wait()
-            except KeyboardInterrupt:
-                pass
-    else:
-        stop = threading.Event()
-        try:
-            stop.wait()
-        except KeyboardInterrupt:
-            pass
+            except ImportError:
+                threading.Event().wait()
+        else:
+            threading.Event().wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cleanup()
+        print("\nBye.")
 
 
 if __name__ == "__main__":

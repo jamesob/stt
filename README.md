@@ -1,5 +1,7 @@
 # STT
 
+Fork of [bokan/stt](https://github.com/bokan/stt) with multi-backend benchmarking, profile-based fallback, and Linux improvements.
+
 **Like SuperWhisper, but free. Like Wispr Flow, but local.**
 
 Hold a key, speak, release -- your words appear wherever your cursor is. Built for vibe coding and conversations with AI agents.
@@ -10,7 +12,7 @@ Hold a key, speak, release -- your words appear wherever your cursor is. Built f
 - **Runs locally** on Apple Silicon via MLX Whisper or Parakeet
 - **Or use cloud** (Groq) or any OpenAI-compatible server
 - **Cross-platform** -- macOS and Wayland Linux (Sway, Hyprland)
-- **One command install** -- `uv tool install git+https://github.com/bokan/stt.git`
+- **One command install** -- `uv tool install git+https://github.com/jamesob/stt.git`
 
 ## Features
 
@@ -43,7 +45,7 @@ Hold a key, speak, release -- your words appear wherever your cursor is. Built f
 ## Installation
 
 ```bash
-uv tool install git+https://github.com/bokan/stt.git
+uv tool install git+https://github.com/jamesob/stt.git
 ```
 
 On first run, a setup wizard will guide you through configuration.
@@ -51,7 +53,7 @@ On first run, a setup wizard will guide you through configuration.
 To update:
 
 ```bash
-uv tool install --reinstall git+https://github.com/bokan/stt.git
+uv tool install --reinstall git+https://github.com/jamesob/stt.git
 ```
 
 ### Linux system dependencies
@@ -102,37 +104,38 @@ stt
 
 Settings are stored in `~/.config/stt/config.yml`. Run `stt --config` to reconfigure, or edit directly. See [`config.sample.yml`](config.sample.yml) for all options.
 
+Provider configuration lives under named **profiles**. General settings stay at the top level:
+
 ```yaml
-provider: openai
 language: en
 hotkey: cmd_r
 sound_enabled: true
+# prompt: Claude, Anthropic, React
 
-# Provider-specific (only the active provider's keys matter)
-openai_base_url: http://localhost:8000
-openai_whisper_model: whisper-large-v3
-# openai_api_key: sk-...
-# groq_api_key: gsk_...
-# whisper_cpp_http_url: http://localhost:8080
-# whisper_model: large-v3          # MLX Whisper model
-# prompt: Claude, Anthropic, React  # domain-specific vocabulary
+active_profile: default
+
+profiles:
+  default:
+    provider: openai
+    openai_base_url: http://localhost:8000
+    openai_whisper_model: whisper-large-v3
 ```
 
-Legacy `.env` files (`~/.config/stt/.env`) are still supported. If both exist, `config.yml` takes precedence.
+Old flat-key configs are automatically migrated to a `default` profile on first load.
 
 ### Providers
 
-| Provider | Config key | Notes |
-|----------|-----------|-------|
+| Provider | Profile keys | Notes |
+|----------|-------------|-------|
 | `mlx` | `whisper_model` | macOS default, Apple Silicon, offline |
 | `parakeet` | `parakeet_model` | macOS, English only, very fast |
-| `openai` | `openai_base_url` | Linux default, any OpenAI-compatible server |
+| `openai` | `openai_base_url`, `openai_api_key`, `openai_whisper_model` | Linux default, any OpenAI-compatible server |
 | `whisper-cpp-http` | `whisper_cpp_http_url` | Local whisper.cpp server |
 | `groq` | `groq_api_key` | Cloud, requires [API key](https://console.groq.com) |
 
-### Profiles
+### Fallback and Benchmark
 
-Profiles let you define named provider configurations with automatic fallback. If a remote server is unreachable, STT falls back to the next provider in the chain:
+Multiple profiles can be chained with automatic fallback. If a remote server is unreachable, STT falls back to the next provider:
 
 ```yaml
 active_profile: auto
@@ -142,10 +145,6 @@ profiles:
     provider: openai
     openai_base_url: http://gpu-server:8200
     openai_whisper_model: Qwen/Qwen3-ASR-1.7B
-  whisper:
-    provider: openai
-    openai_base_url: http://gpu-server:8201
-    openai_whisper_model: openai/whisper-large-v3
   local:
     provider: mlx
     whisper_model: large-v3-turbo
@@ -156,13 +155,9 @@ profiles:
       - local
 ```
 
-**Benchmark mode** runs additional providers in parallel and logs timing + text for comparison, while still returning results from the primary:
+**Benchmark mode** runs additional providers in parallel and logs timing + text for comparison, while returning results from the primary:
 
 ```yaml
-active_profile: bench
-
-profiles:
-  # ... qwen, whisper, local as above ...
   bench:
     fallback:
       - qwen:
@@ -193,7 +188,7 @@ Prompts live in `~/.config/stt/prompts/*.md`.
 ## Development
 
 ```bash
-git clone https://github.com/bokan/stt.git
+git clone https://github.com/jamesob/stt.git
 cd stt
 uv sync
 uv run stt

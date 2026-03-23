@@ -25,16 +25,15 @@ _MANAGED_ENV_KEYS: set[str] = set()
 
 _DEFAULT_PROVIDER = "openai" if IS_LINUX else "mlx"
 
-# Mapping between YAML key names and ENV var names.
+# Provider-specific YAML keys (used for migration only).
+_PROVIDER_YAML_KEYS = frozenset({
+    "provider", "groq_api_key", "whisper_model", "parakeet_model",
+    "whisper_cpp_http_url", "openai_base_url", "openai_api_key",
+    "openai_whisper_model",
+})
+
+# Mapping between YAML key names and ENV var names (general settings only).
 _YAML_TO_ENV = {
-    "provider": "PROVIDER",
-    "groq_api_key": "GROQ_API_KEY",
-    "whisper_model": "WHISPER_MODEL",
-    "parakeet_model": "PARAKEET_MODEL",
-    "whisper_cpp_http_url": "WHISPER_CPP_HTTP_URL",
-    "openai_base_url": "OPENAI_BASE_URL",
-    "openai_api_key": "OPENAI_API_KEY",
-    "openai_whisper_model": "OPENAI_WHISPER_MODEL",
     "audio_device": "AUDIO_DEVICE",
     "language": "LANGUAGE",
     "hotkey": "HOTKEY",
@@ -47,11 +46,8 @@ _ENV_TO_YAML = {v: k for k, v in _YAML_TO_ENV.items()}
 
 # Canonical key order for YAML output.
 _YAML_KEY_ORDER = [
-    "provider", "language", "hotkey", "audio_device",
+    "language", "hotkey", "audio_device",
     "prompt", "sound_enabled", "keep_recordings",
-    "groq_api_key", "whisper_model", "parakeet_model",
-    "openai_base_url", "openai_api_key",
-    "openai_whisper_model", "whisper_cpp_http_url",
     "active_profile", "profiles",
 ]
 
@@ -68,6 +64,34 @@ def _read_yaml() -> dict:
         return {}
 
 
+def _migrate_flat_to_profiles(data: dict) -> dict:
+    """Migrate legacy flat provider keys into a default profile.
+
+    If flat provider keys exist at the top level but no profiles
+    section is present, move them into profiles.default and set
+    active_profile.  Rewrites config.yml in place.
+    """
+    flat_keys = _PROVIDER_YAML_KEYS & set(data)
+    if not flat_keys:
+        return data
+    if "profiles" in data and data["profiles"]:
+        # Profiles already exist; strip stale flat keys.
+        for k in flat_keys:
+            data.pop(k, None)
+        _write_yaml(data)
+        return data
+
+    profile: dict = {}
+    for k in list(flat_keys):
+        profile[k] = data.pop(k)
+    data.setdefault("profiles", {})["default"] = profile
+    data.setdefault("active_profile", "default")
+
+    _write_yaml(data)
+    print("Config migrated: provider keys moved to profiles.default")
+    return data
+
+
 def _ordered_yaml_dict(data: dict) -> dict:
     """Return data dict ordered by canonical key order."""
     ordered: dict = {}
@@ -80,16 +104,23 @@ def _ordered_yaml_dict(data: dict) -> dict:
     return ordered
 
 
-def _save_to_yaml(key: str, value: str) -> str:
-    """Save a single config value to config.yml.
-
-    Key can be ENV-style (PROVIDER) or YAML-style (provider).
-    """
+def _write_yaml(data: dict) -> str:
+    """Write a full dict to config.yml."""
     import yaml
 
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(CONFIG_YAML, "w") as f:
+        yaml.dump(
+            _ordered_yaml_dict(data), f,
+            default_flow_style=False, sort_keys=False,
+        )
+    return CONFIG_YAML
+
+
+def _save_to_yaml(key: str, value: str) -> str:
+    """Save a single top-level config value to config.yml."""
     yaml_key = _ENV_TO_YAML.get(key, key.lower())
 
-    os.makedirs(CONFIG_DIR, exist_ok=True)
     data = _read_yaml() if os.path.exists(CONFIG_YAML) else {}
 
     if not value:
@@ -99,54 +130,65 @@ def _save_to_yaml(key: str, value: str) -> str:
     else:
         data[yaml_key] = value
 
-    with open(CONFIG_YAML, "w") as f:
-        yaml.dump(
-            _ordered_yaml_dict(data), f,
-            default_flow_style=False, sort_keys=False,
-        )
-    return CONFIG_YAML
+    return _write_yaml(data)
+
+
+def save_profile_key(
+    profile_name: str, key: str, value: str,
+) -> str:
+    """Save a single key under profiles.<profile_name> in config.yml."""
+    data = _read_yaml() if os.path.exists(CONFIG_YAML) else {}
+    profiles = data.setdefault("profiles", {})
+    profile = profiles.setdefault(profile_name, {})
+
+    if not value:
+        profile.pop(key, None)
+    elif value.lower() in ("true", "false"):
+        profile[key] = value.lower() == "true"
+    else:
+        profile[key] = value
+
+    return _write_yaml(data)
+
+
+def get_active_profile_dict() -> tuple[str, dict]:
+    """Return (profile_name, profile_cfg) for the active profile.
+
+    Reads from YAML config.  Returns ("", {}) if no profile is active.
+    """
+    data = _read_yaml()
+    if not data:
+        return "", {}
+    data = _migrate_flat_to_profiles(data)
+    name = (
+        os.environ.get("STT_PROFILE", "")
+        or data.get("active_profile", "")
+        or data.get("active", "")
+    )
+    if not name:
+        return "", {}
+    profiles = data.get("profiles", {})
+    return name, profiles.get(name, {})
 
 
 @dataclass
 class Config:
-    provider: str = _DEFAULT_PROVIDER
-    groq_api_key: str = ""
-    whisper_model: str = ""
-    parakeet_model: str = ""
-    whisper_cpp_http_url: str = "http://localhost:8080"
-    openai_base_url: str = "http://localhost:8000"
-    openai_api_key: str = ""
-    openai_whisper_model: str = "whisper-large-v3"
-    audio_device: str = ""  # device name
+    active_profile: str = ""
+    audio_device: str = ""
     language: str = "en"
     hotkey: str = "cmd_r"
     prompt: str = ""
-    stt_profile: str = ""
     sound_enabled: bool = True
     keep_recordings: bool = False
 
     @staticmethod
     def from_env() -> "Config":
         return Config(
-            provider=os.environ.get("PROVIDER", _DEFAULT_PROVIDER),
-            groq_api_key=os.environ.get("GROQ_API_KEY", ""),
-            whisper_model=os.environ.get("WHISPER_MODEL", ""),
-            parakeet_model=os.environ.get("PARAKEET_MODEL", ""),
-            whisper_cpp_http_url=os.environ.get(
-                "WHISPER_CPP_HTTP_URL", "http://localhost:8080"
-            ),
-            openai_base_url=os.environ.get(
-                "OPENAI_BASE_URL", "http://localhost:8000"
-            ),
-            openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
-            openai_whisper_model=os.environ.get(
-                "OPENAI_WHISPER_MODEL", "whisper-large-v3"
-            ),
+            active_profile=os.environ.get("STT_PROFILE", ""),
             audio_device=os.environ.get("AUDIO_DEVICE", ""),
             language=os.environ.get("LANGUAGE", "en"),
             hotkey=os.environ.get("HOTKEY", "cmd_r"),
             prompt=os.environ.get("PROMPT", ""),
-            stt_profile=os.environ.get("STT_PROFILE", ""),
             sound_enabled=os.environ.get(
                 "SOUND_ENABLED", "true"
             ).lower() == "true",
@@ -157,19 +199,11 @@ class Config:
 
     def to_env_dict(self) -> dict[str, str]:
         return {
-            "PROVIDER": self.provider,
-            "GROQ_API_KEY": self.groq_api_key,
-            "WHISPER_MODEL": self.whisper_model,
-            "PARAKEET_MODEL": self.parakeet_model,
-            "WHISPER_CPP_HTTP_URL": self.whisper_cpp_http_url,
-            "OPENAI_BASE_URL": self.openai_base_url,
-            "OPENAI_API_KEY": self.openai_api_key,
-            "OPENAI_WHISPER_MODEL": self.openai_whisper_model,
+            "STT_PROFILE": self.active_profile,
             "AUDIO_DEVICE": self.audio_device,
             "LANGUAGE": self.language,
             "HOTKEY": self.hotkey,
             "PROMPT": self.prompt,
-            "STT_PROFILE": self.stt_profile,
             "SOUND_ENABLED": str(self.sound_enabled).lower(),
             "KEEP_RECORDINGS": str(self.keep_recordings).lower(),
         }
@@ -181,21 +215,27 @@ def load_env_startup() -> None:
     Precedence (highest to lowest):
     - OS env
     - local .env (cwd)
+    - config.yml general settings
     - global ~/.config/stt/.env
     """
+    # Run migration before loading env.
+    if os.path.exists(CONFIG_YAML):
+        data = _read_yaml()
+        if data:
+            _migrate_flat_to_profiles(data)
     _apply_env_files(is_startup=True)
 
 
 def reload_env_files() -> None:
-    """Reload env files and apply changes (without overriding base OS env keys)."""
+    """Reload env files and apply changes."""
     _apply_env_files(is_startup=False)
 
 
 def _read_env_files() -> dict[str, str]:
     """Read config files without mutating the process environment.
 
-    Precedence: local .env > config.yml > global .env.
-    config.yml and global .env are mutually exclusive (YAML wins).
+    Only reads general (non-provider) settings from YAML.
+    Falls back to .env for legacy setups.
     """
     data: dict[str, str] = {}
 
@@ -225,7 +265,7 @@ def _read_env_files() -> dict[str, str]:
 
 
 def _apply_env_files(*, is_startup: bool) -> None:
-    """Apply env file values into os.environ, without overriding base OS env keys."""
+    """Apply env file values into os.environ."""
     global _MANAGED_ENV_KEYS
 
     data = _read_env_files()
@@ -299,13 +339,17 @@ def save_config(key: str, value: str, *, force_global: bool = False) -> str:
 class ConfigWatcher:
     """Watch config files for changes and trigger reload."""
 
-    def __init__(self, on_config_change: Callable[[Config, dict[str, Any]], None]):
+    def __init__(
+        self,
+        on_config_change: Callable[[Config, dict[str, Any]], None],
+    ):
         self._on_config_change = on_config_change
         self._observer: Optional[Observer] = None
         self._watched_files: set[str] = set()
         self._last_mtime: dict[str, float] = {}
         self._debounce_timer: Optional[threading.Timer] = None
         self._lock = threading.Lock()
+        self._last_yaml_snapshot: str = ""
 
     def start(self):
         local_env = os.path.join(os.getcwd(), ".env")
@@ -323,19 +367,26 @@ class ConfigWatcher:
         if not self._watched_files:
             return
 
+        # Snapshot YAML for profile change detection.
+        self._last_yaml_snapshot = self._yaml_snapshot()
+
         for path in self._watched_files:
             if os.path.exists(path):
                 self._last_mtime[path] = os.path.getmtime(path)
 
         self._observer = Observer()
-        handler = _ConfigFileHandler(self._on_file_changed, self._watched_files)
+        handler = _ConfigFileHandler(
+            self._on_file_changed, self._watched_files,
+        )
 
         watched_dirs = set()
         for path in self._watched_files:
             dir_path = os.path.dirname(path)
             if dir_path and dir_path not in watched_dirs:
                 watched_dirs.add(dir_path)
-                self._observer.schedule(handler, dir_path, recursive=False)
+                self._observer.schedule(
+                    handler, dir_path, recursive=False,
+                )
 
         self._observer.start()
 
@@ -360,13 +411,26 @@ class ConfigWatcher:
 
             if self._debounce_timer:
                 self._debounce_timer.cancel()
-            self._debounce_timer = threading.Timer(0.1, self._reload_config)
+            self._debounce_timer = threading.Timer(
+                0.1, self._reload_config,
+            )
             self._debounce_timer.start()
+
+    @staticmethod
+    def _yaml_snapshot() -> str:
+        """Hash-like snapshot of profiles + active_profile."""
+        import json
+        data = _read_yaml()
+        relevant = {
+            "active_profile": data.get("active_profile", ""),
+            "profiles": data.get("profiles", {}),
+        }
+        return json.dumps(relevant, sort_keys=True)
 
     def _reload_config(self):
         old = Config.from_env().to_env_dict()
+        old_yaml = self._last_yaml_snapshot
 
-        # Reload env files. local wins over global; OS env wins over both.
         _apply_env_files(is_startup=False)
 
         new_cfg = Config.from_env()
@@ -375,11 +439,18 @@ class ConfigWatcher:
         changes: dict[str, Any] = {}
         for k, old_v in old.items():
             if old_v != new.get(k, ""):
-                # Preserve booleans for a couple of known keys.
                 if k in ("SOUND_ENABLED", "KEEP_RECORDINGS"):
-                    changes[k] = new.get(k, "false").lower() == "true"
+                    changes[k] = (
+                        new.get(k, "false").lower() == "true"
+                    )
                 else:
                     changes[k] = new.get(k, "")
+
+        # Detect profile content changes.
+        new_yaml = self._yaml_snapshot()
+        if new_yaml != old_yaml:
+            changes["_PROFILES_CHANGED"] = True
+            self._last_yaml_snapshot = new_yaml
 
         if changes:
             print(f"Config reloaded: {', '.join(changes.keys())}")
@@ -387,7 +458,10 @@ class ConfigWatcher:
 
 
 class _ConfigFileHandler(FileSystemEventHandler):
-    def __init__(self, callback: Callable[[str], None], watched_files: set[str]):
+    def __init__(
+        self, callback: Callable[[str], None],
+        watched_files: set[str],
+    ):
         self._callback = callback
         self._watched_files = watched_files
 

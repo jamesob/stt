@@ -11,7 +11,7 @@ from typing import Callable, Optional
 
 from audio_worker_client import AudioWorkerClient
 from issue_capture import maybe_capture_mlx_issue
-from providers import get_provider
+from profiles import load_active_provider
 from recordings import DEFAULT_RECORDINGS_DIR, DEFAULT_RECORDINGS_MAX_BYTES, archive_recording
 from stt_defaults import NullOverlay, get_hotkey_display_name, noop_sound, noop_text_injector
 
@@ -48,7 +48,7 @@ class STTApp:
     ):
         self.recording = False
         self.device_name = device_name  # Store name, resolve to index at record time.
-        self.provider = provider or get_provider(os.environ.get("PROVIDER", "mlx"))
+        self.provider = provider or load_active_provider()
         self._audio_worker = audio_worker or AudioWorkerClient()
         self._overlay = overlay or NullOverlay()
 

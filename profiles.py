@@ -1,9 +1,9 @@
 """YAML-based provider profiles for STT.
 
-Profiles allow named provider configurations switchable via
-STT_PROFILE env var or the ``active`` key in profiles.yml.
+All provider configuration lives under the ``profiles:`` key in
+config.yml.  The ``active_profile`` key selects which profile to use::
 
-Fallback entries reference other profiles by name::
+    active_profile: auto
 
     profiles:
       local:
@@ -11,7 +11,7 @@ Fallback entries reference other profiles by name::
 
       remote:
         provider: openai
-        openai_base_url: http://stt.j.co:8200
+        openai_base_url: http://gpu-server:8200
         openai_whisper_model: Qwen/Qwen3-ASR-1.7B
 
       auto:
@@ -19,8 +19,6 @@ Fallback entries reference other profiles by name::
           - remote:
               connect_timeout: 2
           - local
-
-    active: auto
 """
 
 from __future__ import annotations
@@ -28,7 +26,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from stt_config import CONFIG_DIR
+from stt_config import CONFIG_DIR, _migrate_flat_to_profiles
 
 
 PROFILES_FILENAME = "profiles.yml"
@@ -51,8 +49,10 @@ def load_profiles() -> dict | None:
         if path.exists():
             with open(path) as f:
                 data = yaml.safe_load(f)
-            if isinstance(data, dict) and "profiles" in data:
-                return data
+            if isinstance(data, dict):
+                data = _migrate_flat_to_profiles(data)
+                if "profiles" in data:
+                    return data
 
     # Standalone profiles.yml (legacy)
     for path in [
@@ -72,15 +72,44 @@ def get_active_profile(
     """Resolve a profile config dict by name.
 
     *profile_name* (from env/config) takes precedence over the
-    ``active`` key inside the YAML.
+    ``active_profile`` key inside the YAML.
     """
     name = (
         profile_name
-        or profiles_data.get("active", "")
+        or profiles_data.get("active_profile", "")
+        or profiles_data.get("active", "")  # legacy
     )
     if not name:
         return None
     return profiles_data.get("profiles", {}).get(name)
+
+
+def load_active_provider(profile_name: str = ""):
+    """Load and return the active TranscriptionProvider.
+
+    Combines load_profiles + get_active_profile + provider_from_profile
+    into a single call.
+    """
+    data = load_profiles()
+    if data is None:
+        raise ValueError(
+            "No config.yml with profiles found. "
+            "Run stt --config to set up."
+        )
+    profile = get_active_profile(data, profile_name)
+    if profile is None:
+        name = (
+            profile_name
+            or data.get("active_profile", "")
+            or data.get("active", "")
+        )
+        raise ValueError(
+            f"Profile {name!r} not found"
+            if name else "No active_profile set"
+        )
+    return provider_from_profile(
+        profile, data.get("profiles", {}),
+    )
 
 
 def provider_from_profile(

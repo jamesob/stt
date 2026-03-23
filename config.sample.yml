@@ -2,7 +2,7 @@
 # Copy to ~/.config/stt/config.yml, or run `stt` and the setup wizard
 # will create one for you.
 #
-# Docs: https://github.com/bokan/stt
+# Docs: https://github.com/jamesob/stt
 
 # -- General ----------------------------------------------------------
 
@@ -25,46 +25,49 @@ sound_enabled: true
 # Save recordings to ~/.config/stt/recordings/
 keep_recordings: false
 
-# -- Provider ----------------------------------------------------------
-# Available: mlx, openai, whisper-cpp-http, groq, parakeet
-#
-# When active_profile is set the flat provider settings below are
-# ignored and the named profile is used instead.
+# -- Profiles ---------------------------------------------------------
+# Provider configuration lives under profiles.
+# Set active_profile to choose which one to use.
 
-provider: openai
+active_profile: default
 
-# MLX Whisper (macOS, local)
-# whisper_model: large-v3
+profiles:
+  default:
+    # Available providers: mlx, openai, whisper-cpp-http, groq, parakeet
+    provider: openai
 
-# Parakeet (macOS, local, English only)
-# parakeet_model: mlx-community/parakeet-tdt-0.6b-v3
+    # MLX Whisper (macOS, local)
+    # provider: mlx
+    # whisper_model: large-v3
 
-# OpenAI-compatible server (default on Linux)
-openai_base_url: http://localhost:8000
-# openai_api_key: sk-...
-openai_whisper_model: whisper-large-v3
+    # Parakeet (macOS, local, English only)
+    # provider: parakeet
+    # parakeet_model: mlx-community/parakeet-tdt-0.6b-v3
 
-# Whisper.cpp HTTP server
-# whisper_cpp_http_url: http://localhost:8080
+    # OpenAI-compatible server (default on Linux)
+    openai_base_url: http://localhost:8000
+    # openai_api_key: sk-...
+    openai_whisper_model: whisper-large-v3
 
-# Groq Cloud
-# groq_api_key: gsk_...
+    # Whisper.cpp HTTP server
+    # provider: whisper-cpp-http
+    # whisper_cpp_http_url: http://localhost:8080
 
-# -- Profiles (optional) ----------------------------------------------
-# Named provider configs with automatic fallback.
-# Set active_profile to use one; the flat provider settings above are
-# then ignored.
-#
-# active_profile: auto
+    # Groq Cloud
+    # provider: groq
+    # groq_api_key: gsk_...
+
+# -- Advanced: fallback + benchmark -----------------------------------
+# Named profiles with automatic fallback and benchmarking.
 #
 # profiles:
 #   qwen:
 #     provider: openai
-#     openai_base_url: http://stt.j.co:8200
+#     openai_base_url: http://gpu-server:8200
 #     openai_whisper_model: Qwen/Qwen3-ASR-1.7B
 #   whisper:
 #     provider: openai
-#     openai_base_url: http://stt.j.co:8201
+#     openai_base_url: http://gpu-server:8201
 #     openai_whisper_model: openai/whisper-large-v3
 #   local:
 #     provider: mlx
@@ -74,11 +77,6 @@ openai_whisper_model: whisper-large-v3
 #       - qwen:
 #           connect_timeout: 2
 #       - local
-#
-# -- Benchmark mode (optional) ------------------------------------------
-# Uses the primary provider for results but runs all listed profiles
-# in parallel and logs timing + text for comparison.
-#
 #   bench:
 #     fallback:
 #       - qwen:

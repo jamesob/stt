@@ -70,7 +70,7 @@ class TranscriptionProvider(ABC):
         """Human-readable provider name"""
         pass
 
-    def warmup(self) -> None:
+    def warmup(self, quiet: bool = False) -> None:
         """Initialize/preload resources. Override if needed."""
         pass
 
@@ -684,12 +684,27 @@ class MLXWhisperProvider(TranscriptionProvider):
         except ImportError:
             return False
 
-    def warmup(self) -> None:
+    def warmup(self, quiet: bool = False) -> None:
         """Pre-load the model at startup (downloads if needed)"""
+        model_name = self.model.split('/')[-1]
+
+        if quiet:
+            try:
+                if self._use_worker:
+                    self._ensure_worker()
+                else:
+                    import mlx_whisper
+                    from mlx_whisper.transcribe import ModelHolder
+                    import mlx.core as mx
+                    ModelHolder.get_model(self.model, mx.float16)
+                    self._mlx_whisper = mlx_whisper
+            except Exception:
+                pass
+            return
+
         from rich.console import Console
         from rich.status import Status
         console = Console()
-        model_name = self.model.split('/')[-1]
 
         if self._use_worker:
             with Status(f"[dim]Loading {model_name}...[/dim]", console=console, spinner="dots"):
@@ -824,8 +839,15 @@ class ParakeetProvider(TranscriptionProvider):
         except ImportError:
             return False
 
-    def warmup(self) -> None:
+    def warmup(self, quiet: bool = False) -> None:
         """Pre-load the model at startup (downloads if needed)"""
+        if quiet:
+            try:
+                self._ensure_worker()
+            except Exception:
+                pass
+            return
+
         from rich.console import Console
         from rich.status import Status
         console = Console()
@@ -921,15 +943,19 @@ class FallbackProvider(TranscriptionProvider):
     def is_available(self) -> bool:
         return any(p.is_available() for p, _ in self._chain)
 
-    def warmup(self) -> None:
+    def warmup(self, quiet: bool = False) -> None:
         # Only warm the primary provider. Fallback providers
         # warm lazily on first use to avoid wasting memory.
         for i, (prov, timeout) in enumerate(self._chain):
             if timeout and hasattr(prov, "base_url"):
+                if not quiet:
+                    print(f"Probing {prov.name}...")
                 if not self._probe(prov.base_url, timeout):
+                    if not quiet:
+                        print(f"  unreachable, trying next")
                     continue
             if prov.is_available():
-                prov.warmup()
+                prov.warmup(quiet=quiet)
                 self._warmed.add(i)
                 return
 
@@ -1012,6 +1038,8 @@ class BenchmarkProvider(TranscriptionProvider):
     ):
         self._primary = primary
         self._others = others
+        self._print_lock = threading.Lock()
+        self._warmup_threads: list[threading.Thread] = []
 
     @property
     def name(self) -> str:
@@ -1020,23 +1048,32 @@ class BenchmarkProvider(TranscriptionProvider):
     def is_available(self) -> bool:
         return self._primary.is_available()
 
-    def warmup(self) -> None:
-        self._primary.warmup()
+    def warmup(self, quiet: bool = False) -> None:
+        self._primary.warmup(quiet=quiet)
         # Warm others in background threads so we don't block startup
+        self._warmup_threads = []
         for prov in self._others:
-            threading.Thread(
+            t = threading.Thread(
                 target=self._safe_warmup, args=(prov,),
                 daemon=True,
-            ).start()
+            )
+            t.start()
+            self._warmup_threads.append(t)
+
+    def wait_ready(self, timeout: float = 120) -> None:
+        """Block until all benchmark providers have finished warmup."""
+        for t in self._warmup_threads:
+            t.join(timeout=timeout)
+        self._warmup_threads.clear()
 
     def transcribe(
         self, audio_file_path: str, language: str,
         prompt: str = None,
     ) -> str | None:
-        results: dict[str, tuple[str | None, float]] = {}
+        results: list[tuple[str, str | None, float, bool]] = []
         lock = threading.Lock()
 
-        def _run(prov: TranscriptionProvider):
+        def _run(prov: TranscriptionProvider, primary: bool = False):
             t0 = time.monotonic()
             try:
                 text = prov.transcribe(
@@ -1045,8 +1082,7 @@ class BenchmarkProvider(TranscriptionProvider):
                 text = f"[error: {e}]"
             elapsed = time.monotonic() - t0
             with lock:
-                results[prov.name] = (text, elapsed)
-            self._log_result(prov.name, text, elapsed)
+                results.append((prov.name, text, elapsed, primary))
 
         # Launch others in background
         threads = []
@@ -1058,16 +1094,24 @@ class BenchmarkProvider(TranscriptionProvider):
                 threads.append(t)
 
         # Run primary in foreground
-        t0 = time.monotonic()
-        result = self._primary.transcribe(
-            audio_file_path, language, prompt)
-        elapsed = time.monotonic() - t0
-        self._log_result(
-            self._primary.name, result, elapsed,
-            primary=True,
-        )
+        _run(self._primary, primary=True)
 
-        return result
+        # Wait for all benchmark threads before printing
+        for t in threads:
+            t.join(timeout=30)
+
+        # Print all results together, primary first
+        with self._print_lock:
+            for name, text, elapsed, primary in sorted(
+                results, key=lambda r: (not r[3], r[2])
+            ):
+                self._log(name, text, elapsed, primary=primary)
+
+        # Return primary result
+        for name, text, elapsed, primary in results:
+            if primary:
+                return text
+        return None
 
     def cancel(self) -> None:
         c = getattr(self._primary, "cancel", None)
@@ -1084,38 +1128,31 @@ class BenchmarkProvider(TranscriptionProvider):
     @staticmethod
     def _safe_warmup(prov: TranscriptionProvider):
         try:
-            prov.warmup()
+            prov.warmup(quiet=True)
         except Exception as e:
             print(f"[benchmark] {prov.name} warmup failed: {e}")
 
     @staticmethod
-    def _log_result(
+    def _log(
         name: str, text: str | None, elapsed: float,
         primary: bool = False,
     ):
+        from rich.console import Console
+        console = Console(highlight=False)
+
         tag = ">>>" if primary else "   "
         sec = f"{elapsed:.2f}s"
-        preview = (text or "").strip()
-        if len(preview) > 120:
-            preview = preview[:117] + "..."
-        print(f"[benchmark] [{sec}] {tag} {name}: {preview}")
+        content = (text or "").strip()
+        label = f"[bold]{name}[/bold]" if primary else name
+
+        console.print(
+            f"[dim]\\[benchmark][/dim] "
+            f"[yellow]{sec:>7s}[/yellow] "
+            f"{tag} {label}"
+        )
+        if content:
+            console.print(
+                f"          [dim]{content}[/dim]"
+            )
 
 
-def get_provider(provider_name: str = None) -> TranscriptionProvider:
-    """Get a transcription provider by name"""
-    provider_name = provider_name or os.environ.get("PROVIDER", "mlx")
-    provider_name = provider_name.lower()
-
-    providers = {
-        "groq": GroqProvider,
-        "mlx": MLXWhisperProvider,
-        "openai": OpenAICompatibleProvider,
-        "parakeet": ParakeetProvider,
-        "whisper-cpp-http": WhisperCPPHTTPProvider,
-    }
-
-    if provider_name not in providers:
-        available = ", ".join(providers.keys())
-        raise ValueError(f"Unknown provider: {provider_name}. Available: {available}")
-
-    return providers[provider_name]()
