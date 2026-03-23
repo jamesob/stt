@@ -14,7 +14,7 @@ import time
 
 os.environ.setdefault("STT_HEADLESS", "1")
 
-import stt
+from stt.app import STTApp
 
 
 class _NullOverlay:
@@ -73,7 +73,7 @@ def main() -> int:
     if args.seed is not None:
         random.seed(args.seed)
 
-    app = stt.STTApp(
+    app = STTApp(
         device_name=args.device,
         provider=_DummyProvider(),
         overlay=_NullOverlay(),

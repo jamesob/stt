@@ -1,7 +1,7 @@
 """evdev-based keyboard listener for Wayland Linux.
 
 Monitors /dev/input/event* devices for keyboard events and translates
-them to pynput Key objects so the existing InputController handlers
+them to Key enum values so the existing InputController handlers
 work unchanged.
 """
 
@@ -15,7 +15,7 @@ from typing import Callable, Optional
 
 import evdev
 from evdev import InputDevice, categorize, ecodes
-from pynput.keyboard import Key
+from stt.input._keys import Key
 
 
 # evdev keycode -> pynput Key mapping (modifiers only)
@@ -34,12 +34,21 @@ _EVDEV_TO_PYNPUT: dict[int, Key] = {
 # Capabilities a device must have to count as a keyboard
 _REQUIRED_KEYS = {ecodes.KEY_A, ecodes.KEY_Z, ecodes.KEY_SPACE, ecodes.KEY_ENTER}
 
+# HID devices that report keyboard keys but aren't real keyboards
+_DEVICE_BLACKLIST = {"yubikey", "fido", "u2f", "security key", "smartcard"}
+
 _RESCAN_INTERVAL_S = 3.0
 
 
 def _is_keyboard(device: InputDevice) -> bool:
-    caps = device.capabilities().get(ecodes.EV_KEY, [])
-    return _REQUIRED_KEYS.issubset(caps)
+    caps = device.capabilities()
+    keys = caps.get(ecodes.EV_KEY, [])
+    if not _REQUIRED_KEYS.issubset(keys):
+        return False
+    name_lower = device.name.lower()
+    if any(bl in name_lower for bl in _DEVICE_BLACKLIST):
+        return False
+    return True
 
 
 def _find_keyboards() -> list[InputDevice]:

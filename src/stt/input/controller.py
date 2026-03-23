@@ -5,23 +5,31 @@ import threading
 import time
 from typing import Optional
 
-from pynput import keyboard
+from stt.defaults import IS_LINUX
+from stt.app import STTApp
 
-from stt_defaults import IS_LINUX
-from stt_app import STTApp
+if IS_LINUX:
+    from stt.input._keys import Key as _Key
+
+    class _KeyboardModule:
+        """Shim providing keyboard.Key namespace on Linux."""
+        Key = _Key
+    keyboard = _KeyboardModule()  # type: ignore[assignment]
+    mouse = None
+else:
+    from pynput import keyboard
+    try:
+        from pynput import mouse
+    except Exception:
+        mouse = None  # type: ignore[assignment]
 
 try:
-    from pynput import mouse
-except Exception:
-    mouse = None  # type: ignore[assignment]
-
-try:
-    from prompt_overlay import PromptOverlay
+    from stt.ui.prompt_overlay import PromptOverlay
 except ImportError:
     PromptOverlay = None  # type: ignore[assignment,misc]
 
 try:
-    from text_injector import paste_text
+    from stt.text.injector import paste_text
 except ImportError:
     paste_text = None  # type: ignore[assignment]
 
@@ -123,7 +131,7 @@ class InputController:
 
     def _make_keyboard_listener(self):
         if IS_LINUX:
-            from evdev_listener import EvdevKeyboardListener
+            from stt.input.evdev_listener import EvdevKeyboardListener
             return EvdevKeyboardListener(
                 on_press=self._on_press,
                 on_release=self._on_release,

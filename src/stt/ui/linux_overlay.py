@@ -11,7 +11,7 @@ import math
 import threading
 from typing import Optional
 
-from stt_defaults import NullOverlay
+from stt.defaults import NullOverlay
 
 # Overlay dimensions (match macOS)
 PILL_WIDTH = 280
@@ -23,6 +23,15 @@ BAR_MAX_HEIGHT = 40
 BAR_MIN_HEIGHT = 4
 CORNER_RADIUS = PILL_HEIGHT / 2
 MIC_AREA_WIDTH = 52
+
+# Preload gtk4-layer-shell before GTK/wayland to fix link order.
+# See https://github.com/wmww/gtk4-layer-shell/blob/main/linking.md
+_HAS_LAYER_SHELL = False
+try:
+    import ctypes
+    ctypes.CDLL("libgtk4-layer-shell.so", mode=ctypes.RTLD_GLOBAL)
+except OSError:
+    pass
 
 try:
     import gi
@@ -37,7 +46,7 @@ try:
     from gi.repository import Gtk4LayerShell
     _HAS_LAYER_SHELL = True
 except Exception:
-    _HAS_LAYER_SHELL = False
+    pass
 
 
 class LinuxOverlay:

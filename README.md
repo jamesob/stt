@@ -38,8 +38,8 @@ Hold a key, speak, release -- your words appear wherever your cursor is. Built f
 
 - A wlroots-based compositor (Sway, Hyprland, etc.)
 - [UV](https://docs.astral.sh/uv/) package manager
-- System packages: `gtk4-layer-shell`, `wtype`, `wl-clipboard`, `libgirepository1.0-dev`, `gir1.2-gtk-4.0`
-- User must be in the `input` group for keyboard capture: `sudo usermod -aG input $USER && newgrp input`
+- System packages (see [install commands](#linux-system-dependencies) below)
+- User must be in the `input` group for keyboard capture
 - A transcription server (OpenAI-compatible endpoint, Whisper.cpp HTTP, or Groq cloud)
 
 ## Installation
@@ -58,16 +58,28 @@ uv tool install --reinstall git+https://github.com/jamesob/stt.git
 
 ### Linux system dependencies
 
+Text injection requires `wtype` and `wl-clipboard`. The recording overlay needs GTK4 and `gtk4-layer-shell`. Audio capture uses PortAudio via the `sounddevice` Python package.
+
+#### Arch Linux
+
 ```bash
-# Debian/Ubuntu
-sudo apt install gtk4-layer-shell wtype wl-clipboard \
+sudo pacman -S wtype wl-clipboard gtk4-layer-shell \
+    gobject-introspection portaudio pipewire-pulse
+```
+
+#### Debian / Ubuntu
+
+```bash
+sudo apt install wtype wl-clipboard gtk4-layer-shell-dev \
     libgirepository1.0-dev gir1.2-gtk-4.0 gir1.2-gtk4layershell-1.0 \
-    pulseaudio-utils
+    libportaudio2 portaudio19-dev pipewire-pulse
+```
 
-# Arch
-sudo pacman -S gtk4-layer-shell wtype wl-clipboard
+#### Keyboard capture (all distros)
 
-# Add yourself to the input group (required for keyboard capture)
+STT uses evdev to capture the hotkey globally. Your user must be in the `input` group:
+
+```bash
 sudo usermod -aG input $USER
 newgrp input  # or log out and back in
 ```

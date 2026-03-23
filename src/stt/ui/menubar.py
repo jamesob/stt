@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Callable
 import rumps
 
 if TYPE_CHECKING:
-    from stt import AppState, STTApp
+    from stt.app import AppState, STTApp
 
 # SF Symbol names for each state
 SF_SYMBOLS = {

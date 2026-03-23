@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from stt_defaults import IS_LINUX, IS_MACOS, get_hotkey_display_name
+from stt.defaults import IS_LINUX, IS_MACOS, get_hotkey_display_name
 
 from rich.console import Console
 from rich.panel import Panel
@@ -414,7 +414,7 @@ def check_model_cached(model_id: str) -> bool:
     try:
         from huggingface_hub import try_to_load_from_cache, HfFileSystemResolvedPath
 
-        from providers import MLXWhisperProvider
+        from stt.providers import MLXWhisperProvider
         repo_id = MLXWhisperProvider.mlx_repo_id(model_id)
         # Check for config.json as a proxy for the model being cached
         result = try_to_load_from_cache(repo_id, "config.json")
@@ -479,7 +479,7 @@ def download_model_with_progress(model_id: str, progress: Progress, task_id) -> 
     import os
     import tqdm
 
-    from providers import MLXWhisperProvider
+    from stt.providers import MLXWhisperProvider
     repo_id = MLXWhisperProvider.mlx_repo_id(model_id)
     total_size = get_model_download_size(model_id)
 

@@ -212,7 +212,7 @@ class AudioWorkerClient:
 
         self._stop_locked(force=True)
 
-        worker_path = os.path.join(os.path.dirname(__file__), "audio_worker.py")
+        worker_path = os.path.join(os.path.dirname(__file__), "worker.py")
         if not os.path.exists(worker_path):
             raise FileNotFoundError(f"Missing audio worker at {worker_path}")
 

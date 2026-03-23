@@ -9,11 +9,11 @@ from collections import deque
 from enum import Enum
 from typing import Callable, Optional
 
-from audio_worker_client import AudioWorkerClient
-from issue_capture import maybe_capture_mlx_issue
-from profiles import load_active_provider
-from recordings import DEFAULT_RECORDINGS_DIR, DEFAULT_RECORDINGS_MAX_BYTES, archive_recording
-from stt_defaults import NullOverlay, get_hotkey_display_name, noop_sound, noop_text_injector
+from stt.audio.client import AudioWorkerClient
+from stt.issue_capture import maybe_capture_mlx_issue
+from stt.profiles import load_active_provider
+from stt.recordings import DEFAULT_RECORDINGS_DIR, DEFAULT_RECORDINGS_MAX_BYTES, archive_recording
+from stt.defaults import NullOverlay, get_hotkey_display_name, noop_sound, noop_text_injector
 
 
 SAMPLE_RATE = 16000  # Whisper expects 16kHz
@@ -302,7 +302,6 @@ class STTApp:
         """Type text into the active text field (injected backend)."""
         if not text:
             return
-        print(f"Typing: {text}" + (" ↵" if send_enter else ""))
         try:
             self._text_injector(text, send_enter)
         except Exception as e:

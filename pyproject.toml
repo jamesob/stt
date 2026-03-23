@@ -28,7 +28,7 @@ dependencies = [
 parakeet = ["parakeet-mlx"]
 
 [project.scripts]
-stt = "stt:main"
+stt = "stt.cli:main"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
@@ -38,32 +38,7 @@ build-backend = "hatchling.build"
 source = "vcs"
 
 [tool.hatch.build.hooks.vcs]
-version-file = "_version.py"
+version-file = "src/stt/_version.py"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["stt.py", "stt_app.py", "stt_config.py", "stt_defaults.py", "recordings.py", "issue_capture.py", "audio_worker_client.py", "text_injector.py", "input_controller.py", "providers.py", "profiles.py", "menubar.py", "mlx_worker.py", "parakeet_worker.py", "audio_worker.py", "postprocess.py", "overlay.py", "onboarding.py", "prompt_overlay.py", "prompts_config.py", "evdev_listener.py", "linux_overlay.py", "linux_text_injector.py"]
-
-[tool.hatch.build.targets.wheel.sources]
-"stt.py" = "stt.py"
-"stt_app.py" = "stt_app.py"
-"stt_config.py" = "stt_config.py"
-"stt_defaults.py" = "stt_defaults.py"
-"recordings.py" = "recordings.py"
-"issue_capture.py" = "issue_capture.py"
-"audio_worker_client.py" = "audio_worker_client.py"
-"text_injector.py" = "text_injector.py"
-"input_controller.py" = "input_controller.py"
-"providers.py" = "providers.py"
-"profiles.py" = "profiles.py"
-"menubar.py" = "menubar.py"
-"mlx_worker.py" = "mlx_worker.py"
-"parakeet_worker.py" = "parakeet_worker.py"
-"audio_worker.py" = "audio_worker.py"
-"postprocess.py" = "postprocess.py"
-"overlay.py" = "overlay.py"
-"onboarding.py" = "onboarding.py"
-"prompt_overlay.py" = "prompt_overlay.py"
-"prompts_config.py" = "prompts_config.py"
-"evdev_listener.py" = "evdev_listener.py"
-"linux_overlay.py" = "linux_overlay.py"
-"linux_text_injector.py" = "linux_text_injector.py"
+packages = ["src/stt"]

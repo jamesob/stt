@@ -11,8 +11,8 @@ from Foundation import NSTimer, NSRunLoop, NSDefaultRunLoopMode
 app = NSApplication.sharedApplication()
 app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
-from overlay import get_overlay, BAR_COUNT
-from prompt_overlay import PromptOverlay
+from stt.ui.overlay import get_overlay, BAR_COUNT
+from stt.ui.prompt_overlay import PromptOverlay
 
 class OverlayHarness:
     def __init__(self):

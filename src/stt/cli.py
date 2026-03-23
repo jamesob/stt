@@ -16,8 +16,8 @@ import tempfile
 import threading
 from typing import Optional
 
-from stt_app import AppState, STTApp
-from stt_defaults import IS_LINUX, IS_MACOS, get_hotkey_display_name
+from stt.app import AppState, STTApp
+from stt.defaults import IS_LINUX, IS_MACOS, get_hotkey_display_name
 
 
 HEADLESS = os.environ.get("STT_HEADLESS") == "1"
@@ -103,22 +103,129 @@ def check_accessibility_permissions() -> bool:
         return True
 
 
-def check_linux_permissions() -> bool:
-    """Warn if user is not in the 'input' group (needed for evdev)."""
+def check_linux_deps() -> None:
+    """Check Linux system dependencies and warn loudly about missing ones."""
     import grp
+    import shutil
+
+    from rich.console import Console
+    console = Console()
+
+    problems: list[str] = []
+    arch_pkgs: list[str] = []
+    deb_pkgs: list[str] = []
+
+    # -- input group (evdev keyboard capture) --
     try:
         input_gid = grp.getgrnam("input").gr_gid
         if input_gid not in os.getgroups():
-            print(
-                "Warning: User not in 'input' group. "
-                "Keyboard capture may fail.\n"
-                "  Fix: sudo usermod -aG input $USER && newgrp input"
+            problems.append(
+                "User not in 'input' group -- keyboard capture "
+                "will fail.\n"
+                "  Fix: sudo usermod -aG input $USER && "
+                "newgrp input"
             )
-            return False
     except KeyError:
-        print("Warning: 'input' group does not exist on this system.")
-        return False
-    return True
+        problems.append("'input' group does not exist on this system.")
+
+    # -- wtype (text injection) --
+    if not shutil.which("wtype"):
+        problems.append("'wtype' not found -- typed text will not appear.")
+        arch_pkgs.append("wtype")
+        deb_pkgs.append("wtype")
+
+    # -- wl-clipboard (clipboard support) --
+    if not shutil.which("wl-copy"):
+        problems.append(
+            "'wl-copy' not found (wl-clipboard) -- "
+            "clipboard features unavailable."
+        )
+        arch_pkgs.append("wl-clipboard")
+        deb_pkgs.append("wl-clipboard")
+
+    # -- PortAudio (audio recording via sounddevice) --
+    try:
+        import ctypes.util
+        if not ctypes.util.find_library("portaudio"):
+            raise ImportError
+    except (ImportError, OSError):
+        problems.append(
+            "libportaudio not found -- audio recording will fail."
+        )
+        arch_pkgs.append("portaudio")
+        deb_pkgs.extend(["libportaudio2", "portaudio19-dev"])
+
+    # -- PulseAudio / PipeWire (audio daemon) --
+    if not shutil.which("paplay") and not shutil.which("aplay"):
+        problems.append(
+            "Neither 'paplay' nor 'aplay' found -- "
+            "sound feedback will be silent."
+        )
+        arch_pkgs.append("pipewire-pulse")
+        deb_pkgs.append("pipewire-pulse")
+
+    # -- GTK4 + PyGObject (overlay UI) --
+    # Don't actually import GTK here -- it initializes a Wayland
+    # connection and must happen after the layer-shell preload.
+    try:
+        import importlib
+        importlib.import_module("gi")
+    except ImportError:
+        problems.append(
+            "PyGObject not available -- "
+            "recording overlay will be disabled."
+        )
+        arch_pkgs.append("gobject-introspection")
+        deb_pkgs.extend([
+            "libgirepository1.0-dev",
+            "gir1.2-gtk-4.0",
+        ])
+
+    # -- gtk4-layer-shell (overlay floating on Wayland) --
+    try:
+        import ctypes.util as _cu
+        if not _cu.find_library("gtk4-layer-shell"):
+            raise OSError
+    except OSError:
+        problems.append(
+            "libgtk4-layer-shell not found -- "
+            "overlay will not float above windows."
+        )
+        arch_pkgs.append("gtk4-layer-shell")
+        deb_pkgs.extend([
+            "gtk4-layer-shell-dev",
+            "gir1.2-gtk4layershell-1.0",
+        ])
+
+    if not problems:
+        return
+
+    bar = "[bold red]" + "=" * 52 + "[/bold red]"
+    console.print()
+    console.print(bar)
+    console.print(
+        "[bold red]  MISSING LINUX DEPENDENCIES[/bold red]"
+    )
+    console.print(bar)
+    console.print()
+    for p in problems:
+        console.print(f"  [red]* {p}[/red]")
+
+    if arch_pkgs:
+        console.print()
+        console.print("[bold]Arch Linux:[/bold]")
+        console.print(
+            f"  sudo pacman -S {' '.join(arch_pkgs)}"
+        )
+    if deb_pkgs:
+        console.print()
+        console.print("[bold]Debian / Ubuntu:[/bold]")
+        console.print(
+            f"  sudo apt install {' '.join(deb_pkgs)}"
+        )
+    console.print()
+    console.print(bar)
+    console.print()
 
 
 def _select_audio_device(*, saved_device_name: str, save_device_fn) -> str | None:
@@ -174,9 +281,9 @@ def main() -> None:
     import subprocess
     import time
 
-    from profiles import load_active_provider
-    from prompts_config import ensure_default_prompts
-    from stt_config import (
+    from stt.profiles import load_active_provider
+    from stt.prompts_config import ensure_default_prompts
+    from stt.config import (
         CONFIG_YAML,
         Config,
         ConfigWatcher,
@@ -196,7 +303,7 @@ def main() -> None:
 
     # --config: interactive wizard.
     if "--config" in sys.argv:
-        from onboarding import run_setup
+        from stt.onboarding import run_setup
 
         prof_name, prof_cfg = get_active_profile_dict()
         target_profile = prof_name or "default"
@@ -234,7 +341,7 @@ def main() -> None:
 
     # Dev-only permission flow testing (macOS only).
     if "--test-permissions" in sys.argv and IS_MACOS:
-        from onboarding import (
+        from stt.onboarding import (
             console,
             get_terminal_app,
             open_accessibility_settings,
@@ -276,7 +383,7 @@ def main() -> None:
 
     # First-run onboarding.
     if is_first_run():
-        from onboarding import run_first_time_setup
+        from stt.onboarding import run_first_time_setup
 
         def save_and_update(key: str, value: str):
             yaml_key = _ENV_TO_YAML.get(key, key.lower())
@@ -338,7 +445,7 @@ def main() -> None:
         _, prof_cfg = get_active_profile_dict()
         prov_name = prof_cfg.get("provider", "")
         if prov_name == "groq" and not prof_cfg.get("groq_api_key"):
-            from onboarding import run_setup
+            from stt.onboarding import run_setup
 
             target = cfg.active_profile or "default"
 
@@ -383,7 +490,7 @@ def main() -> None:
     # Permission checks (platform-specific).
     if IS_MACOS:
         if not check_accessibility_permissions():
-            from onboarding import (
+            from stt.onboarding import (
                 get_terminal_app,
                 open_accessibility_settings,
                 prompt_open_settings,
@@ -399,7 +506,7 @@ def main() -> None:
             )
             raise SystemExit(1)
     elif IS_LINUX:
-        check_linux_permissions()
+        check_linux_deps()
 
     # Select audio device (uses saved device or prompts).
     def save_device(device_name: str) -> None:
@@ -430,10 +537,10 @@ def main() -> None:
     ensure_default_prompts()
 
     # Platform-specific UI wiring.
-    from input_controller import InputController
+    from stt.input.controller import InputController
 
     if IS_LINUX:
-        from linux_overlay import get_overlay
+        from stt.ui.linux_overlay import get_overlay
 
         overlay = get_overlay()
 
@@ -465,14 +572,14 @@ def main() -> None:
                 except FileNotFoundError:
                     continue
 
-        from linux_text_injector import paste_text as linux_paste
+        from stt.text.linux_injector import paste_text as linux_paste
 
         def type_text(text: str, send_enter: bool = False) -> None:
             linux_paste(text, send_enter=send_enter)
 
     else:
-        from overlay import get_overlay
-        from text_injector import paste_text
+        from stt.ui.overlay import get_overlay
+        from stt.text.injector import paste_text
 
         overlay = get_overlay()
 
@@ -532,7 +639,7 @@ def main() -> None:
     atexit.register(cleanup)
 
     if IS_MACOS:
-        from menubar import STTMenuBar
+        from stt.ui.menubar import STTMenuBar
 
         def on_sound_toggle(enabled: bool):
             nonlocal cfg

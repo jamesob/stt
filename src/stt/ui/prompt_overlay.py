@@ -31,7 +31,7 @@ from Foundation import (
     NSAttributedString,
 )
 
-from prompts_config import PromptItem
+from stt.prompts_config import PromptItem
 
 # Overlay dimensions
 OVERLAY_WIDTH = 320
@@ -208,7 +208,7 @@ class PromptOverlay:
         self._visible = False
         self._lock = threading.Lock()
         # Load prompts synchronously at init
-        from prompts_config import load_prompts
+        from stt.prompts_config import load_prompts
         self._prompts: list[PromptItem] = load_prompts()
 
     def _ensure_window(self):
@@ -272,7 +272,7 @@ class PromptOverlay:
 
     def reload_prompts(self):
         """Reload prompts from config"""
-        from prompts_config import load_prompts
+        from stt.prompts_config import load_prompts
         self._prompts = load_prompts()
 
         def _update():

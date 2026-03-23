@@ -282,7 +282,7 @@ class _MLXWorkerClient:
         if self.is_running():
             return
 
-        worker_path = os.path.join(os.path.dirname(__file__), "mlx_worker.py")
+        worker_path = os.path.join(os.path.dirname(__file__), "workers", "mlx_worker.py")
         if not os.path.exists(worker_path):
             raise FileNotFoundError(f"Missing MLX worker at {worker_path}")
 
@@ -486,7 +486,7 @@ class _WorkerClient:
         if self.is_running():
             return
 
-        worker_path = os.path.join(os.path.dirname(__file__), self.worker_script)
+        worker_path = os.path.join(os.path.dirname(__file__), "workers", self.worker_script)
         if not os.path.exists(worker_path):
             raise FileNotFoundError(f"Missing worker at {worker_path}")
 
@@ -882,7 +882,7 @@ class ParakeetProvider(TranscriptionProvider):
 
             # Apply phonetic correction using PROMPT vocabulary
             if prompt and text:
-                from postprocess import parse_vocabulary, correct_text
+                from stt.postprocess import parse_vocabulary, correct_text
                 vocab = parse_vocabulary(prompt)
                 if vocab:
                     text = correct_text(text, vocab)

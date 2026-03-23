@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from stt_config import CONFIG_DIR, _migrate_flat_to_profiles
+from stt.config import CONFIG_DIR, _migrate_flat_to_profiles
 
 
 PROFILES_FILENAME = "profiles.yml"
@@ -120,7 +120,7 @@ def provider_from_profile(
     *all_profiles* is the ``profiles:`` mapping so that
     fallback entries can reference other profiles by name.
     """
-    from providers import BenchmarkProvider, FallbackProvider
+    from stt.providers import BenchmarkProvider, FallbackProvider
 
     if "fallback" in profile_cfg:
         chain = []
@@ -205,7 +205,7 @@ def _resolve_fallback_entry(
 
 def _make_provider(cfg: dict):
     """Instantiate a single provider from config keys."""
-    from providers import (
+    from stt.providers import (
         GroqProvider,
         MLXWhisperProvider,
         OpenAICompatibleProvider,

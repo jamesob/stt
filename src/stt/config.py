@@ -10,7 +10,7 @@ from dotenv import dotenv_values
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from stt_defaults import IS_LINUX
+from stt.defaults import IS_LINUX
 
 
 CONFIG_DIR = os.path.expanduser("~/.config/stt")
