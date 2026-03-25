@@ -1029,7 +1029,7 @@ class FallbackProvider(TranscriptionProvider):
 
 
 class BenchmarkProvider(TranscriptionProvider):
-    """Wraps a primary provider; runs all others in parallel and logs results."""
+    """Run all backends in parallel; return the primary's result and log timing."""
 
     def __init__(
         self,
@@ -1050,7 +1050,6 @@ class BenchmarkProvider(TranscriptionProvider):
 
     def warmup(self, quiet: bool = False) -> None:
         self._primary.warmup(quiet=quiet)
-        # Warm others in background threads so we don't block startup
         self._warmup_threads = []
         for prov in self._others:
             t = threading.Thread(
@@ -1061,7 +1060,7 @@ class BenchmarkProvider(TranscriptionProvider):
             self._warmup_threads.append(t)
 
     def wait_ready(self, timeout: float = 120) -> None:
-        """Block until all benchmark providers have finished warmup."""
+        """Block until all benchmark providers have warmed up."""
         for t in self._warmup_threads:
             t.join(timeout=timeout)
         self._warmup_threads.clear()
@@ -1073,7 +1072,7 @@ class BenchmarkProvider(TranscriptionProvider):
         results: list[tuple[str, str | None, float, bool]] = []
         lock = threading.Lock()
 
-        def _run(prov: TranscriptionProvider, primary: bool = False):
+        def _run(prov, primary=False):
             t0 = time.monotonic()
             try:
                 text = prov.transcribe(
@@ -1082,9 +1081,9 @@ class BenchmarkProvider(TranscriptionProvider):
                 text = f"[error: {e}]"
             elapsed = time.monotonic() - t0
             with lock:
-                results.append((prov.name, text, elapsed, primary))
+                results.append(
+                    (prov.name, text, elapsed, primary))
 
-        # Launch others in background
         threads = []
         for prov in self._others:
             if prov.is_available():
@@ -1093,21 +1092,18 @@ class BenchmarkProvider(TranscriptionProvider):
                 t.start()
                 threads.append(t)
 
-        # Run primary in foreground
         _run(self._primary, primary=True)
 
-        # Wait for all benchmark threads before printing
         for t in threads:
             t.join(timeout=30)
 
-        # Print all results together, primary first
         with self._print_lock:
             for name, text, elapsed, primary in sorted(
-                results, key=lambda r: (not r[3], r[2])
+                results, key=lambda r: (not r[3], r[2]),
             ):
-                self._log(name, text, elapsed, primary=primary)
+                self._log(
+                    name, text, elapsed, primary=primary)
 
-        # Return primary result
         for name, text, elapsed, primary in results:
             if primary:
                 return text
@@ -1130,7 +1126,7 @@ class BenchmarkProvider(TranscriptionProvider):
         try:
             prov.warmup(quiet=True)
         except Exception as e:
-            print(f"[benchmark] {prov.name} warmup failed: {e}")
+            print(f"[benchmark] {prov.name} warmup: {e}")
 
     @staticmethod
     def _log(
@@ -1143,10 +1139,11 @@ class BenchmarkProvider(TranscriptionProvider):
         tag = ">>>" if primary else "   "
         sec = f"{elapsed:.2f}s"
         content = (text or "").strip()
-        label = f"[bold]{name}[/bold]" if primary else name
-
+        label = (
+            f"[bold]{name}[/bold]" if primary else name
+        )
         console.print(
-            f"[dim]\\[benchmark][/dim] "
+            f"[dim]\\[bench][/dim] "
             f"[yellow]{sec:>7s}[/yellow] "
             f"{tag} {label}"
         )

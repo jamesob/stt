@@ -281,21 +281,21 @@ def main() -> None:
     import subprocess
     import time
 
-    from stt.profiles import load_active_provider
+    from stt.profiles import load_provider
     from stt.prompts_config import ensure_default_prompts
     from stt.config import (
         CONFIG_YAML,
         Config,
         ConfigWatcher,
-        _PROVIDER_YAML_KEYS,
+        _BACKEND_YAML_KEYS,
         _ENV_TO_YAML,
-        get_active_profile_dict,
+        get_backends_and_order,
         is_first_run,
         load_env_startup,
         reload_env_files,
         mark_initialized,
         save_config,
-        save_profile_key,
+        save_backend_key,
     )
 
     load_env_startup()
@@ -305,38 +305,47 @@ def main() -> None:
     if "--config" in sys.argv:
         from stt.onboarding import run_setup
 
-        prof_name, prof_cfg = get_active_profile_dict()
-        target_profile = prof_name or "default"
+        backends, order = get_backends_and_order()
+        # Use the first backend in order, or "default".
+        target = order[0] if order else "default"
+        backend_cfg = backends.get(target, {})
 
         def save(key: str, value: str):
             yaml_key = _ENV_TO_YAML.get(key, key.lower())
-            if yaml_key in _PROVIDER_YAML_KEYS:
-                save_profile_key(target_profile, yaml_key, value)
+            if yaml_key in _BACKEND_YAML_KEYS:
+                save_backend_key(target, yaml_key, value)
             else:
                 save_config(key, value, force_global=True)
             os.environ[str(key)] = str(value)
 
         current_config = {
-            "provider": prof_cfg.get("provider", ""),
-            "model": prof_cfg.get("whisper_model", ""),
-            "groq_api_key": prof_cfg.get("groq_api_key", ""),
+            "provider": backend_cfg.get("provider", ""),
+            "model": backend_cfg.get("whisper_model", ""),
+            "groq_api_key": backend_cfg.get(
+                "groq_api_key", ""),
             "hotkey": cfg.hotkey,
             "audio_device": cfg.audio_device,
-            "openai_base_url": prof_cfg.get(
+            "openai_base_url": backend_cfg.get(
                 "openai_base_url", ""),
-            "openai_api_key": prof_cfg.get(
+            "openai_api_key": backend_cfg.get(
                 "openai_api_key", ""),
-            "openai_whisper_model": prof_cfg.get(
+            "openai_whisper_model": backend_cfg.get(
                 "openai_whisper_model", ""),
-            "whisper_cpp_http_url": prof_cfg.get(
+            "whisper_cpp_http_url": backend_cfg.get(
                 "whisper_cpp_http_url", ""),
         }
-        run_setup(save, current_config=current_config, reconfigure=True)
-        # Ensure active_profile is set after wizard.
-        save_config(
-            "active_profile", target_profile,
-            force_global=True,
+        run_setup(
+            save, current_config=current_config,
+            reconfigure=True,
         )
+        # Ensure order includes the target backend.
+        if target not in order:
+            order.append(target)
+            save_config("order", "", force_global=True)
+            from stt.config import _read_yaml, _write_yaml
+            data = _read_yaml()
+            data["order"] = order
+            _write_yaml(data)
         return
 
     # Dev-only permission flow testing (macOS only).
@@ -387,16 +396,19 @@ def main() -> None:
 
         def save_and_update(key: str, value: str):
             yaml_key = _ENV_TO_YAML.get(key, key.lower())
-            if yaml_key in _PROVIDER_YAML_KEYS:
-                save_profile_key("default", yaml_key, value)
+            if yaml_key in _BACKEND_YAML_KEYS:
+                save_backend_key("default", yaml_key, value)
             else:
                 save_config(key, value, force_global=True)
             os.environ[str(key)] = str(value)
 
         run_first_time_setup(save_and_update)
-        save_config(
-            "active_profile", "default", force_global=True,
-        )
+        # Set order to the default backend.
+        from stt.config import _read_yaml, _write_yaml
+        data = _read_yaml()
+        if "order" not in data:
+            data["order"] = ["default"]
+            _write_yaml(data)
         mark_initialized()
         reload_env_files()
         cfg = Config.from_env()
@@ -412,7 +424,7 @@ def main() -> None:
 
     threading.Thread(target=check_for_updates, daemon=True).start()
 
-    # Initialize provider via profiles.
+    # Initialize provider via backends.
     provider = None
     init_error = None
 
@@ -429,7 +441,7 @@ def main() -> None:
     )
     slow_timer.start()
     try:
-        provider = load_active_provider(cfg.active_profile)
+        provider = load_provider(benchmark=cfg.benchmark)
     except ValueError as e:
         init_error = e
     finally:
@@ -441,18 +453,21 @@ def main() -> None:
         raise SystemExit(1)
 
     if not provider.is_available():
-        # Check if this is a groq profile missing an API key.
-        _, prof_cfg = get_active_profile_dict()
-        prov_name = prof_cfg.get("provider", "")
-        if prov_name == "groq" and not prof_cfg.get("groq_api_key"):
+        # Check if this is a groq backend missing an API key.
+        backends, order = get_backends_and_order()
+        target = order[0] if order else "default"
+        backend_cfg = backends.get(target, {})
+        prov_name = backend_cfg.get("provider", "")
+        if prov_name == "groq" and not backend_cfg.get(
+            "groq_api_key"
+        ):
             from stt.onboarding import run_setup
-
-            target = cfg.active_profile or "default"
 
             def save(key: str, value: str):
                 yaml_key = _ENV_TO_YAML.get(key, key.lower())
-                if yaml_key in _PROVIDER_YAML_KEYS:
-                    save_profile_key(target, yaml_key, value)
+                if yaml_key in _BACKEND_YAML_KEYS:
+                    save_backend_key(
+                        target, yaml_key, value)
                 else:
                     save_config(
                         key, value, force_global=True)
@@ -468,7 +483,7 @@ def main() -> None:
             )
             reload_env_files()
             cfg = Config.from_env()
-            provider = load_active_provider(cfg.active_profile)
+            provider = load_provider()
         else:
             console.print(
                 f"[red]x[/red] Provider not available: "
@@ -691,11 +706,11 @@ def main() -> None:
                 f"{'enabled' if cfg.sound_enabled else 'disabled'}"
             )
 
-        # Profile or provider config changed.
-        if "STT_PROFILE" in changes or "_PROFILES_CHANGED" in changes:
+        # Backend, order, or benchmark changed.
+        if "_BACKENDS_CHANGED" in changes or "BENCHMARK" in changes:
             try:
-                provider = load_active_provider(
-                    cfg.active_profile)
+                provider = load_provider(
+                    benchmark=cfg.benchmark)
                 if provider.is_available():
                     provider.warmup()
                     app.provider = provider

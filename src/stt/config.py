@@ -25,11 +25,11 @@ _MANAGED_ENV_KEYS: set[str] = set()
 
 _DEFAULT_PROVIDER = "openai" if IS_LINUX else "mlx"
 
-# Provider-specific YAML keys (used for migration only).
-_PROVIDER_YAML_KEYS = frozenset({
+# Keys that belong inside a backend definition (not top-level).
+_BACKEND_YAML_KEYS = frozenset({
     "provider", "groq_api_key", "whisper_model", "parakeet_model",
     "whisper_cpp_http_url", "openai_base_url", "openai_api_key",
-    "openai_whisper_model",
+    "openai_whisper_model", "connect_timeout",
 })
 
 # Mapping between YAML key names and ENV var names (general settings only).
@@ -38,9 +38,9 @@ _YAML_TO_ENV = {
     "language": "LANGUAGE",
     "hotkey": "HOTKEY",
     "prompt": "PROMPT",
-    "active_profile": "STT_PROFILE",
     "sound_enabled": "SOUND_ENABLED",
     "keep_recordings": "KEEP_RECORDINGS",
+    "benchmark": "BENCHMARK",
 }
 _ENV_TO_YAML = {v: k for k, v in _YAML_TO_ENV.items()}
 
@@ -48,7 +48,7 @@ _ENV_TO_YAML = {v: k for k, v in _YAML_TO_ENV.items()}
 _YAML_KEY_ORDER = [
     "language", "hotkey", "audio_device",
     "prompt", "sound_enabled", "keep_recordings",
-    "active_profile", "profiles",
+    "benchmark", "backends", "order",
 ]
 
 
@@ -64,31 +64,79 @@ def _read_yaml() -> dict:
         return {}
 
 
-def _migrate_flat_to_profiles(data: dict) -> dict:
-    """Migrate legacy flat provider keys into a default profile.
+def _migrate_config(data: dict) -> dict:
+    """Migrate legacy config formats to backends + order.
 
-    If flat provider keys exist at the top level but no profiles
-    section is present, move them into profiles.default and set
-    active_profile.  Rewrites config.yml in place.
+    Handles two legacy shapes:
+    1. Flat provider keys at top level -> backends.default + order
+    2. profiles + active_profile -> backends + order
     """
-    flat_keys = _PROVIDER_YAML_KEYS & set(data)
-    if not flat_keys:
-        return data
-    if "profiles" in data and data["profiles"]:
-        # Profiles already exist; strip stale flat keys.
-        for k in flat_keys:
-            data.pop(k, None)
+    changed = False
+
+    # --- Legacy shape 1: flat provider keys at top level ---
+    flat_keys = _BACKEND_YAML_KEYS & set(data)
+    if flat_keys and "backends" not in data and "profiles" not in data:
+        backend: dict = {}
+        for k in list(flat_keys):
+            backend[k] = data.pop(k)
+        data["backends"] = {"default": backend}
+        data["order"] = ["default"]
+        data.pop("active_profile", None)
+        changed = True
+
+    # --- Legacy shape 2: profiles + active_profile ---
+    if "profiles" in data:
+        profiles = data.pop("profiles")
+        active = (
+            data.pop("active_profile", None)
+            or data.pop("active", None)
+            or ""
+        )
+        data["backends"] = profiles
+
+        # Build order from the active profile's fallback list,
+        # or just [active_profile] if it was a simple profile.
+        if active and active in profiles:
+            active_cfg = profiles[active]
+            if "fallback" in active_cfg:
+                order = []
+                for entry in active_cfg["fallback"]:
+                    if isinstance(entry, str):
+                        order.append(entry)
+                    elif isinstance(entry, dict):
+                        refs = [
+                            k for k in entry if k in profiles
+                        ]
+                        if refs:
+                            order.append(refs[0])
+                # Remove the meta-profile that held fallback
+                del data["backends"][active]
+                data["order"] = order
+            else:
+                data["order"] = [active]
+        elif profiles:
+            data["order"] = list(profiles.keys())[:1]
+
+        # Strip benchmark meta-profiles
+        for name, cfg in list(data["backends"].items()):
+            if isinstance(cfg, dict) and (
+                "fallback" in cfg or "benchmark" in cfg
+            ):
+                del data["backends"][name]
+
+        changed = True
+
+    # Strip stale flat keys if backends already exist
+    if "backends" in data:
+        for k in _BACKEND_YAML_KEYS & set(data):
+            data.pop(k)
+            changed = True
+        data.pop("active_profile", None)
+        data.pop("active", None)
+
+    if changed:
         _write_yaml(data)
-        return data
-
-    profile: dict = {}
-    for k in list(flat_keys):
-        profile[k] = data.pop(k)
-    data.setdefault("profiles", {})["default"] = profile
-    data.setdefault("active_profile", "default")
-
-    _write_yaml(data)
-    print("Config migrated: provider keys moved to profiles.default")
+        print("Config migrated to backends + order format")
     return data
 
 
@@ -133,58 +181,54 @@ def _save_to_yaml(key: str, value: str) -> str:
     return _write_yaml(data)
 
 
-def save_profile_key(
-    profile_name: str, key: str, value: str,
+def save_backend_key(
+    backend_name: str, key: str, value: str,
 ) -> str:
-    """Save a single key under profiles.<profile_name> in config.yml."""
+    """Save a single key under backends.<backend_name> in config.yml."""
     data = _read_yaml() if os.path.exists(CONFIG_YAML) else {}
-    profiles = data.setdefault("profiles", {})
-    profile = profiles.setdefault(profile_name, {})
+    backends = data.setdefault("backends", {})
+    backend = backends.setdefault(backend_name, {})
 
     if not value:
-        profile.pop(key, None)
+        backend.pop(key, None)
     elif value.lower() in ("true", "false"):
-        profile[key] = value.lower() == "true"
+        backend[key] = value.lower() == "true"
     else:
-        profile[key] = value
+        backend[key] = value
 
     return _write_yaml(data)
 
 
-def get_active_profile_dict() -> tuple[str, dict]:
-    """Return (profile_name, profile_cfg) for the active profile.
+def get_backends_and_order() -> tuple[dict[str, dict], list[str]]:
+    """Return (backends_dict, order_list) from config.
 
-    Reads from YAML config.  Returns ("", {}) if no profile is active.
+    Returns ({}, []) if no backends configured.
     """
     data = _read_yaml()
     if not data:
-        return "", {}
-    data = _migrate_flat_to_profiles(data)
-    name = (
-        os.environ.get("STT_PROFILE", "")
-        or data.get("active_profile", "")
-        or data.get("active", "")
-    )
-    if not name:
-        return "", {}
-    profiles = data.get("profiles", {})
-    return name, profiles.get(name, {})
+        return {}, []
+    data = _migrate_config(data)
+    backends = data.get("backends", {})
+    order = data.get("order", [])
+    # If no explicit order but backends exist, use all of them.
+    if not order and backends:
+        order = list(backends.keys())
+    return backends, order
 
 
 @dataclass
 class Config:
-    active_profile: str = ""
     audio_device: str = ""
     language: str = "en"
     hotkey: str = "cmd_r"
     prompt: str = ""
     sound_enabled: bool = True
     keep_recordings: bool = False
+    benchmark: bool = False
 
     @staticmethod
     def from_env() -> "Config":
         return Config(
-            active_profile=os.environ.get("STT_PROFILE", ""),
             audio_device=os.environ.get("AUDIO_DEVICE", ""),
             language=os.environ.get("LANGUAGE", "en"),
             hotkey=os.environ.get("HOTKEY", "cmd_r"),
@@ -195,17 +239,20 @@ class Config:
             keep_recordings=os.environ.get(
                 "KEEP_RECORDINGS", "false"
             ).lower() == "true",
+            benchmark=os.environ.get(
+                "BENCHMARK", "false"
+            ).lower() == "true",
         )
 
     def to_env_dict(self) -> dict[str, str]:
         return {
-            "STT_PROFILE": self.active_profile,
             "AUDIO_DEVICE": self.audio_device,
             "LANGUAGE": self.language,
             "HOTKEY": self.hotkey,
             "PROMPT": self.prompt,
             "SOUND_ENABLED": str(self.sound_enabled).lower(),
             "KEEP_RECORDINGS": str(self.keep_recordings).lower(),
+            "BENCHMARK": str(self.benchmark).lower(),
         }
 
 
@@ -222,7 +269,7 @@ def load_env_startup() -> None:
     if os.path.exists(CONFIG_YAML):
         data = _read_yaml()
         if data:
-            _migrate_flat_to_profiles(data)
+            _migrate_config(data)
     _apply_env_files(is_startup=True)
 
 
@@ -367,7 +414,7 @@ class ConfigWatcher:
         if not self._watched_files:
             return
 
-        # Snapshot YAML for profile change detection.
+        # Snapshot YAML for backend change detection.
         self._last_yaml_snapshot = self._yaml_snapshot()
 
         for path in self._watched_files:
@@ -418,12 +465,12 @@ class ConfigWatcher:
 
     @staticmethod
     def _yaml_snapshot() -> str:
-        """Hash-like snapshot of profiles + active_profile."""
+        """Hash-like snapshot of backends + order."""
         import json
         data = _read_yaml()
         relevant = {
-            "active_profile": data.get("active_profile", ""),
-            "profiles": data.get("profiles", {}),
+            "backends": data.get("backends", {}),
+            "order": data.get("order", []),
         }
         return json.dumps(relevant, sort_keys=True)
 
@@ -446,10 +493,10 @@ class ConfigWatcher:
                 else:
                     changes[k] = new.get(k, "")
 
-        # Detect profile content changes.
+        # Detect backend/order changes.
         new_yaml = self._yaml_snapshot()
         if new_yaml != old_yaml:
-            changes["_PROFILES_CHANGED"] = True
+            changes["_BACKENDS_CHANGED"] = True
             self._last_yaml_snapshot = new_yaml
 
         if changes:

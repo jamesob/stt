@@ -25,16 +25,19 @@ sound_enabled: true
 # Save recordings to ~/.config/stt/recordings/
 keep_recordings: false
 
-# -- Profiles ---------------------------------------------------------
-# Provider configuration lives under profiles.
-# Set active_profile to choose which one to use.
+# Run all backends in parallel and log timing (for comparison)
+# benchmark: true
 
-active_profile: default
+# -- Backends ---------------------------------------------------------
+# Each backend defines a transcription provider.
+# Available providers: mlx, openai, whisper-cpp-http, groq, parakeet
 
-profiles:
+backends:
   default:
-    # Available providers: mlx, openai, whisper-cpp-http, groq, parakeet
     provider: openai
+    openai_base_url: http://localhost:8000
+    # openai_api_key: sk-...
+    openai_whisper_model: whisper-large-v3
 
     # MLX Whisper (macOS, local)
     # provider: mlx
@@ -44,11 +47,6 @@ profiles:
     # provider: parakeet
     # parakeet_model: mlx-community/parakeet-tdt-0.6b-v3
 
-    # OpenAI-compatible server (default on Linux)
-    openai_base_url: http://localhost:8000
-    # openai_api_key: sk-...
-    openai_whisper_model: whisper-large-v3
-
     # Whisper.cpp HTTP server
     # provider: whisper-cpp-http
     # whisper_cpp_http_url: http://localhost:8080
@@ -57,30 +55,26 @@ profiles:
     # provider: groq
     # groq_api_key: gsk_...
 
-# -- Advanced: fallback + benchmark -----------------------------------
-# Named profiles with automatic fallback and benchmarking.
+# -- Order ------------------------------------------------------------
+# Backends are tried in this order. If a backend with connect_timeout
+# is unreachable, the next one is used.
+
+order:
+  - default
+
+# -- Advanced: fallback chain -----------------------------------------
+# Multiple backends with automatic failover:
 #
-# profiles:
-#   qwen:
+# backends:
+#   remote:
 #     provider: openai
 #     openai_base_url: http://gpu-server:8200
 #     openai_whisper_model: Qwen/Qwen3-ASR-1.7B
-#   whisper:
-#     provider: openai
-#     openai_base_url: http://gpu-server:8201
-#     openai_whisper_model: openai/whisper-large-v3
+#     connect_timeout: 2
 #   local:
 #     provider: mlx
 #     whisper_model: large-v3-turbo
-#   auto:
-#     fallback:
-#       - qwen:
-#           connect_timeout: 2
-#       - local
-#   bench:
-#     fallback:
-#       - qwen:
-#           connect_timeout: 2
-#       - local
-#     benchmark:
-#       - whisper
+#
+# order:
+#   - remote
+#   - local

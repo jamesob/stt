@@ -135,6 +135,30 @@ def test_remote_endpoint(
         return False
 
 
+def fetch_openai_models(
+    base_url: str, api_key: str = "",
+    timeout: float = 5.0,
+) -> list[str]:
+    """Fetch available model IDs from an OpenAI-compatible endpoint."""
+    import requests
+
+    url = f"{base_url.rstrip('/')}/v1/models"
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        resp = requests.get(
+            url, headers=headers, timeout=timeout,
+        )
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        models = data.get("data", [])
+        return sorted(m["id"] for m in models if "id" in m)
+    except Exception:
+        return []
+
+
 def test_groq_key(api_key: str) -> bool:
     """Validate a Groq API key with a lightweight request."""
     try:
@@ -261,6 +285,44 @@ def select_model(current: str = None) -> str:
             console.print(f"\n[green]Selected:[/green] {model_id}\n")
             return model_id
         console.print("[red]Invalid choice. Please select 1-5.[/red]")
+
+
+def _select_openai_model(
+    models: list[str], current: str = "",
+) -> str:
+    """Pick a model from a list fetched from an OpenAI-compat endpoint."""
+    console.print("[bold]Available models:[/bold]\n")
+
+    table = Table(
+        show_header=True, header_style="bold",
+        box=None, padding=(0, 2),
+    )
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Model", style="cyan")
+
+    default_choice = 1
+    for i, model_id in enumerate(models, 1):
+        marker = ""
+        if current and model_id == current:
+            marker = " [yellow](current)[/yellow]"
+            default_choice = i
+        table.add_row(str(i), model_id + marker)
+
+    console.print(table)
+    console.print()
+
+    while True:
+        choice = IntPrompt.ask(
+            "Select model",
+            default=default_choice, show_default=True,
+        )
+        if 1 <= choice <= len(models):
+            picked = models[choice - 1]
+            console.print(
+                f"\n[green]Selected:[/green] {picked}\n"
+            )
+            return picked
+        console.print("[red]Invalid choice.[/red]")
 
 
 def select_audio_device(current: str = None) -> str | None:
@@ -620,6 +682,7 @@ def run_setup(save_config_fn, current_config: dict = None, reconfigure: bool = F
 
     elif provider == "openai":
         console.print("[bold]OpenAI-compatible server[/bold]\n")
+        endpoint_reachable = False
         while True:
             base_url = Prompt.ask(
                 "Base URL",
@@ -633,6 +696,7 @@ def run_setup(save_config_fn, current_config: dict = None, reconfigure: bool = F
             )
             if test_remote_endpoint(base_url):
                 console.print(" [green]connected[/green]")
+                endpoint_reachable = True
                 break
             console.print(" [yellow]unreachable[/yellow]")
             if Confirm.ask("Continue anyway?", default=True):
@@ -645,12 +709,37 @@ def run_setup(save_config_fn, current_config: dict = None, reconfigure: bool = F
         )
         if api_key:
             save_config_fn("OPENAI_API_KEY", api_key)
-        model_name = Prompt.ask(
-            "Model name",
-            default=current.get(
-                "openai_whisper_model", "whisper-large-v3"
-            ),
-        )
+
+        # Poll endpoint for available models.
+        model_name = None
+        if endpoint_reachable:
+            console.print(
+                "  [dim]Fetching models...[/dim]", end=""
+            )
+            models = fetch_openai_models(
+                base_url, api_key=api_key,
+            )
+            if models:
+                console.print(
+                    f" [green]{len(models)} found[/green]\n"
+                )
+                model_name = _select_openai_model(
+                    models,
+                    current=current.get(
+                        "openai_whisper_model", ""),
+                )
+            else:
+                console.print(
+                    " [yellow]none found[/yellow]"
+                )
+        if model_name is None:
+            model_name = Prompt.ask(
+                "Model name",
+                default=current.get(
+                    "openai_whisper_model",
+                    "whisper-large-v3",
+                ),
+            )
         save_config_fn("OPENAI_WHISPER_MODEL", model_name)
         console.print()
 

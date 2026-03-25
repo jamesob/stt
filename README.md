@@ -73,18 +73,19 @@ language: en
 hotkey: cmd_r
 sound_enabled: true
 
-active_profile: default
-
-profiles:
+backends:
   default:
     provider: openai
     openai_base_url: http://localhost:8000
     openai_whisper_model: whisper-large-v3
+
+order:
+  - default
 ```
 
 ### Providers
 
-| Provider | Profile keys | Notes |
+| Provider | Backend keys | Notes |
 |----------|-------------|-------|
 | `openai` | `openai_base_url`, `openai_api_key`, `openai_whisper_model` | Any OpenAI-compatible server (vLLM, faster-whisper, etc.) |
 | `whisper-cpp-http` | `whisper_cpp_http_url` | Local whisper.cpp HTTP server |
@@ -94,34 +95,28 @@ profiles:
 
 ### Fallback chains
 
-Profiles can be chained with automatic failover. If a server is unreachable, STT falls back to the next provider:
+Backends listed in `order` are tried in sequence. If a backend with `connect_timeout` is unreachable, STT falls back to the next one:
 
 ```yaml
-profiles:
+backends:
   qwen:
     provider: openai
     openai_base_url: http://gpu-server:8200
     openai_whisper_model: Qwen/Qwen3-ASR-1.7B
+    connect_timeout: 2
   local:
     provider: mlx
     whisper_model: large-v3-turbo
-  auto:
-    fallback:
-      - qwen:
-          connect_timeout: 2
-      - local
+
+order:
+  - qwen
+  - local
 ```
 
-**Benchmark mode** runs additional providers in parallel and logs timing for comparison:
+**Benchmark mode** runs all backends in parallel and logs timing for comparison. The first backend in `order` is the primary (its result is used):
 
 ```yaml
-  bench:
-    fallback:
-      - qwen:
-          connect_timeout: 2
-      - local
-    benchmark:
-      - whisper
+benchmark: true
 ```
 
 ### Prompt tuning
