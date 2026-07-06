@@ -289,8 +289,11 @@ def select_model(current: str = None) -> str:
 
 def _select_openai_model(
     models: list[str], current: str = "",
-) -> str:
-    """Pick a model from a list fetched from an OpenAI-compat endpoint."""
+) -> str | None:
+    """Pick a model from a list fetched from an OpenAI-compat endpoint.
+
+    Returns None for auto-detect (use whatever the server serves).
+    """
     console.print("[bold]Available models:[/bold]\n")
 
     table = Table(
@@ -300,8 +303,13 @@ def _select_openai_model(
     table.add_column("#", style="dim", width=3)
     table.add_column("Model", style="cyan")
 
+    table.add_row(
+        "1",
+        "[green]auto[/green] [dim]detect from server "
+        "(follows backend model swaps)[/dim]",
+    )
     default_choice = 1
-    for i, model_id in enumerate(models, 1):
+    for i, model_id in enumerate(models, 2):
         marker = ""
         if current and model_id == current:
             marker = " [yellow](current)[/yellow]"
@@ -316,8 +324,13 @@ def _select_openai_model(
             "Select model",
             default=default_choice, show_default=True,
         )
-        if 1 <= choice <= len(models):
-            picked = models[choice - 1]
+        if choice == 1:
+            console.print(
+                "\n[green]Selected:[/green] auto-detect\n"
+            )
+            return None
+        if 2 <= choice <= len(models) + 1:
+            picked = models[choice - 2]
             console.print(
                 f"\n[green]Selected:[/green] {picked}\n"
             )
@@ -710,8 +723,10 @@ def run_setup(save_config_fn, current_config: dict = None, reconfigure: bool = F
         if api_key:
             save_config_fn("OPENAI_API_KEY", api_key)
 
-        # Poll endpoint for available models.
+        # Poll endpoint for available models. The model is optional:
+        # empty means auto-detect from /v1/models at transcription time.
         model_name = None
+        model_prompted = False
         if endpoint_reachable:
             console.print(
                 "  [dim]Fetching models...[/dim]", end=""
@@ -728,19 +743,20 @@ def run_setup(save_config_fn, current_config: dict = None, reconfigure: bool = F
                     current=current.get(
                         "openai_whisper_model", ""),
                 )
+                model_prompted = True
             else:
                 console.print(
                     " [yellow]none found[/yellow]"
                 )
-        if model_name is None:
+        if not model_prompted:
             model_name = Prompt.ask(
-                "Model name",
+                "Model name (Enter to auto-detect from server)",
                 default=current.get(
-                    "openai_whisper_model",
-                    "whisper-large-v3",
-                ),
-            )
-        save_config_fn("OPENAI_WHISPER_MODEL", model_name)
+                    "openai_whisper_model", ""),
+                show_default=bool(
+                    current.get("openai_whisper_model")),
+            ) or None
+        save_config_fn("OPENAI_WHISPER_MODEL", model_name or "")
         console.print()
 
     # Step 3: Audio device & hotkey

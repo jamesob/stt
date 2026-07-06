@@ -190,15 +190,52 @@ class OpenAICompatibleProvider(TranscriptionProvider):
         ).rstrip("/")
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.model = model or os.environ.get(
-            "OPENAI_WHISPER_MODEL", "whisper-large-v3"
+            "OPENAI_WHISPER_MODEL", ""
         )
+        self._resolved_model: str | None = None
 
     @property
     def name(self) -> str:
-        return f"OpenAI-compat ({self.model})"
+        model = self._resolved_model or self.model or "auto"
+        return f"OpenAI-compat ({model})"
 
     def is_available(self) -> bool:
         return bool(self.base_url)
+
+    def _auth_headers(self) -> dict[str, str]:
+        if self.api_key:
+            return {"Authorization": f"Bearer {self.api_key}"}
+        return {}
+
+    def _resolve_model(self) -> str | None:
+        """Return the model to send, asking the server what it serves.
+
+        Queries ``/v1/models``: if the configured model is served, use
+        it; otherwise take the first available model, so backend model
+        swaps are picked up without reconfiguring. Falls back to the
+        configured model if the endpoint can't be queried.
+        """
+        if self._resolved_model:
+            return self._resolved_model
+
+        import requests
+
+        try:
+            resp = requests.get(
+                f"{self.base_url}/v1/models",
+                headers=self._auth_headers(),
+                timeout=(5, 10),
+            )
+            resp.raise_for_status()
+            served = [m["id"] for m in resp.json().get("data", []) if "id" in m]
+            if served:
+                self._resolved_model = (
+                    self.model if self.model in served else served[0]
+                )
+                return self._resolved_model
+        except Exception:
+            pass
+        return self.model or None
 
     def transcribe(
         self, audio_file_path: str, language: str, prompt: str = None
@@ -208,9 +245,12 @@ class OpenAICompatibleProvider(TranscriptionProvider):
         print("Transcribing...")
 
         url = f"{self.base_url}/v1/audio/transcriptions"
-        headers: dict[str, str] = {}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        headers = self._auth_headers()
+        model = self._resolve_model()
+        if not model:
+            print("API Error: no model available from "
+                  f"{self.base_url}/v1/models and none configured")
+            return None
 
         ogg_path = _wav_to_opus(audio_file_path)
         send_path = ogg_path or audio_file_path
@@ -219,24 +259,33 @@ class OpenAICompatibleProvider(TranscriptionProvider):
 
         try:
             with open(send_path, "rb") as audio_file:
-                files = {
-                    "file": (fname, audio_file, mime),
-                }
-                data: dict[str, str] = {
-                    "model": self.model,
-                    "response_format": "text",
-                    "language": language,
-                }
-                if prompt:
-                    data["prompt"] = prompt
+                audio_bytes = audio_file.read()
 
+            data: dict[str, str] = {
+                "model": model,
+                "response_format": "text",
+                "language": language,
+            }
+            if prompt:
+                data["prompt"] = prompt
+
+            for attempt in range(2):
                 response = requests.post(
                     url,
                     headers=headers,
-                    files=files,
+                    files={"file": (fname, audio_bytes, mime)},
                     data=data,
                     timeout=(5, 30),
                 )
+                # A 404 usually means the cached model name went stale
+                # (the backend was swapped). Re-resolve and retry once.
+                if response.status_code == 404 and attempt == 0:
+                    self._resolved_model = None
+                    new_model = self._resolve_model()
+                    if new_model and new_model != model:
+                        model = new_model
+                        data["model"] = model
+                        continue
                 response.raise_for_status()
                 text = response.text.strip()
                 # vLLM returns JSON even with response_format=text

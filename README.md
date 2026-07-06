@@ -77,7 +77,6 @@ backends:
   default:
     provider: openai
     openai_base_url: http://localhost:8000
-    openai_whisper_model: whisper-large-v3
 
 order:
   - default
@@ -87,7 +86,7 @@ order:
 
 | Provider | Backend keys | Notes |
 |----------|-------------|-------|
-| `openai` | `openai_base_url`, `openai_api_key`, `openai_whisper_model` | Any OpenAI-compatible server (vLLM, faster-whisper, etc.) |
+| `openai` | `openai_base_url`, `openai_api_key`, `openai_whisper_model` | Any OpenAI-compatible server (vLLM, faster-whisper, etc.). The model is auto-discovered from `/v1/models` (first entry, re-checked if the server swaps models); `openai_whisper_model` is only a fallback for servers that don't expose `/v1/models` |
 | `whisper-cpp-http` | `whisper_cpp_http_url` | Local whisper.cpp HTTP server |
 | `mlx` | `whisper_model` | Apple Silicon, offline |
 | `parakeet` | `parakeet_model` | Apple Silicon, English only, very fast |
@@ -102,7 +101,6 @@ backends:
   qwen:
     provider: openai
     openai_base_url: http://gpu-server:8200
-    openai_whisper_model: Qwen/Qwen3-ASR-1.7B
     connect_timeout: 2
   local:
     provider: mlx

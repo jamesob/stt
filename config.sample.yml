@@ -37,7 +37,9 @@ backends:
     provider: openai
     openai_base_url: http://localhost:8000
     # openai_api_key: sk-...
-    openai_whisper_model: whisper-large-v3
+    # Model is auto-discovered from /v1/models; set this only as a
+    # fallback for servers that don't expose that endpoint.
+    # openai_whisper_model: whisper-large-v3
 
     # MLX Whisper (macOS, local)
     # provider: mlx
@@ -69,7 +71,6 @@ order:
 #   remote:
 #     provider: openai
 #     openai_base_url: http://gpu-server:8200
-#     openai_whisper_model: Qwen/Qwen3-ASR-1.7B
 #     connect_timeout: 2
 #   local:
 #     provider: mlx
